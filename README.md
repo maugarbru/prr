@@ -556,11 +556,15 @@ scrolled away: `prr: reviewing #<PR>` for a full pass, `prr: re-reviewing #<PR>`
 for an incremental one, and `prr: self-reviewing #<PR>` for your own PR (which
 posts nothing back). It is keyed per
 session, so parallel fan-out panes each show their own PR. When idle it prints
-`~/path (branch) [<model>]` instead, e.g. `~/src/platform (main) [Opus 5]`. The
-model comes from the status blob's `display_name` with any trailing
-parenthetical dropped (`Opus 5 (1M context)` shows as `Opus 5`), falling back to
-the raw model id. There is no context-size figure, because Claude Code already
-shows a token count above the prompt.
+`~/path (branch) [<model>] <ctx>` instead, e.g.
+`~/src/platform (main) [Opus 5] 123k/1M`. The model comes from the status blob's
+`display_name` with any trailing parenthetical dropped (`Opus 5 (1M context)`
+shows as `Opus 5`), falling back to the raw model id. The context size is Claude
+Code's own `context_window` figure (`total_input_tokens` against
+`context_window_size`). Claude Code shows a token count above the prompt in some
+layouts but not all, so it is included, but only when it fits whole within the
+cap: it is the first thing left off, and never a reason to trim the path. It is
+also left off when the status blob has no `context_window` block.
 
 Both forms are capped at 90 characters by default (override with the
 `PRR_STATUSLINE_WIDTH` env var, set the same way as `PRR_FANOUT`). A long path is

@@ -3,7 +3,8 @@
 #
 # Claude Code pipes a JSON status blob on stdin. We read its session_id and, if
 # setup-review.sh has left a session-scoped "reviewing" file for this session,
-# print it. Otherwise fall back to the working directory + git branch + model.
+# print it. Otherwise fall back to the working directory + git branch + model,
+# plus the context size when it fits.
 # Keyed by session id so parallel fan-out panes never show each other's PR. The
 # line is capped so a deep path can't overrun the bar; the path is trimmed from
 # the left so its deep end, the branch and the model stay visible.
@@ -57,8 +58,8 @@ if [ -f "$state" ]; then
   exit 0
 fi
 
-# Idle: home-abbreviated cwd + git branch + model. No context size: Claude Code
-# already shows a token count above the prompt.
+# Idle: home-abbreviated cwd + git branch + model, then the context size if the
+# line has room for it.
 cwd="$(printf '%s' "$in" | jq -r '.workspace.current_dir // .cwd // empty' 2>/dev/null)"
 [ -n "${cwd:-}" ] || cwd="$PWD"
 if [ "${cwd#$HOME}" != "$cwd" ]; then dir="~${cwd#$HOME}"; else dir="$cwd"; fi
@@ -81,4 +82,25 @@ suffix=""
 [ -n "${branch:-}" ] && suffix=" ($branch)"
 [ -n "${model_label:-}" ] && suffix="$suffix [$model_label]"
 
-emit_left "$dir" "$suffix"
+line="$(emit_left "$dir" "$suffix")"
+
+# Context size vs the window, e.g. "123k/1M", from Claude Code's context_window
+# block. Appended only when it fits whole, so it is dropped before the path is
+# trimmed. Claude Code shows its own count above the prompt in some layouts only.
+fmt_k() { # 1500000->1.5M, 226000->226k, 500->500
+  if [ "$1" -ge 1000000 ]; then
+    if [ $(($1 % 1000000)) -eq 0 ]; then printf '%dM' "$(($1 / 1000000))"
+    else printf '%d.%dM' "$(($1 / 1000000))" "$((($1 % 1000000) / 100000))"; fi
+  elif [ "$1" -ge 1000 ]; then printf '%dk' "$(($1 / 1000))"
+  else printf '%d' "$1"; fi
+}
+ctoks="$(printf '%s' "$in" | jq -r '.context_window.total_input_tokens // empty' 2>/dev/null)"
+csize="$(printf '%s' "$in" | jq -r '.context_window.context_window_size // empty' 2>/dev/null)"
+case "${ctoks:-x}" in *[!0-9]*|x) ctoks="" ;; esac
+case "${csize:-x}" in *[!0-9]*|x) csize="" ;; esac
+if [ -n "$ctoks" ] && [ -n "$csize" ]; then
+  tokens=" $(fmt_k "$ctoks")/$(fmt_k "$csize")"
+  [ $(( ${#line} + ${#tokens} )) -le "$MAX_WIDTH" ] && line="$line$tokens"
+fi
+
+printf '%s' "$line"

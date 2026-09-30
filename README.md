@@ -613,6 +613,40 @@ keep custom rendering. Nothing else depends on the config: `setup-review.sh` and
 `post-review.sh` always write and clear the tiny session-scoped state file, so if
 you never add the `statusLine` block nothing reads it and there is no effect.
 
+## Experimental: review with a local model (`prr-local`)
+
+> **No local model tested so far is accurate enough to trust**
+> (`qwen3:8b`, `qwen2.5-coder:7b`, `gemma4:26b-a4b-it-qat` as of 2026-09-30;
+> no finding survived checking). It is here so a new model can be tried
+> without rebuilding the pipeline.
+
+`scripts/prr-local.py` runs a single-source review (no security pass) against
+a local [Ollama](https://ollama.com) model. The model's job is kept narrow, and
+code handles everything else. It gets one file at a time, with line numbers
+already filled in, and its output is held to a JSON schema. Every anchor is
+checked against the diff, and the verdict comes from the findings' severities.
+It reuses `setup-review.sh` and `post-review.sh`, so posting, the head-sha
+check, re-review detection and cleanup behave as in prr.
+
+```
+python3 scripts/prr-local.py <PR> [--model TAG] [--silent]         # interactive gate
+python3 scripts/prr-local.py <PR> --save-only                      # report, save, stop
+python3 scripts/prr-local.py <PR> --post-saved APPROVE|APPROVE_BARE|REQUEST_CHANGES|COMMENT
+python3 scripts/prr-local.py <PR> --no-model --silent --save-only  # plumbing check, no model
+python3 scripts/prr-local.py --selftest
+```
+
+The model comes from `--model`, else `$PRR_LOCAL_MODEL`. Every call uses one
+context size (`$PRR_LOCAL_NUM_CTX`, default 32768), because Ollama reloads a
+model whenever it changes. `prr-local/SKILL.md` is for agent harnesses running
+a local model. It sits inside this directory, so Claude Code (which finds only
+top-level skills) never loads it. Point the harness at that path, and not at
+prr's own `SKILL.md`, which is far too long for a local context window.
+
+Before trusting any result, read the `reviewing N file(s)` line. A PR you
+already reviewed, with no commits since, reviews zero files and still proposes
+APPROVE.
+
 ## Requirements
 
 - **Claude Code**, or **Cursor** (2.4+) — `prr` uses the portable `SKILL.md`
@@ -678,7 +712,10 @@ prr/
     ├── prr-fanout-tmux.sh    # backend: tiled tmux panes (portable; default)
     ├── prr-fanout-wezterm.sh # backend: wezterm-native panes, no tmux (Linux only)
     ├── prr-fanout-common.sh  # shared helpers sourced by both fan-out backends
+    ├── prr-local.py      # experimental: single-source review by a local Ollama model
     └── slack_react.py    # optional: react on the PR's chat post (opt-in via env)
+prr-local/
+└── SKILL.md              # the prr-local skill, for agent harnesses on a local model
 ```
 
 ## Good to know

@@ -1,0 +1,627 @@
+#!/usr/bin/env python3
+"""Single-source review with a local Ollama model.
+
+prr's normal flow is dual-source: a model does its own pass while a subagent
+does an independent security pass. This is deliberately NOT that. It runs one
+pass (Source A only) against a local Ollama model, for an outage or for trying
+a local model as a reviewer, and says so in its report.
+
+Status (2026-09-30): no local model tested so far is accurate enough to trust
+(qwen3:8b, qwen2.5-coder:7b, gemma4:26b-a4b-it-qat; no finding survived
+checking). The pipeline is kept so a new model is one --model flag away.
+
+The design point: a local quantized model is weakest at exactly the things a
+review payload demands (strict schema, precise line numbers recalled from a
+long diff, holding a procedure across many turns). So the model is given one
+narrow job -- read one file's hunks, name what is wrong -- and deterministic
+code owns everything else:
+
+  - line numbers are pre-computed and handed TO the model, not asked of it
+  - output is grammar-constrained by a JSON schema, so it cannot be malformed
+  - every anchor is validated against the diff before it can reach GitHub
+  - the verdict is derived from severities, not chosen by the model
+  - the plain-ASCII prose rule is enforced by substitution, not self-check
+  - the approval gate is control flow, so nothing posts without a keypress,
+    or, under --save-only, without a separate --post-saved run
+
+Mechanics are reused as-is: setup-review.sh prepares the worktree and
+artifacts, post-review.sh validates the head sha, posts, signals chat, and
+cleans up. Neither cares which model produced the findings.
+
+Usage:
+  prr-local.py <PR> [--model NAME] [--silent] [--no-model] [--save-only]
+  prr-local.py <PR> --post-saved APPROVE|APPROVE_BARE|REQUEST_CHANGES|COMMENT
+  prr-local.py --selftest
+
+  --model       Ollama model tag (default: $PRR_LOCAL_MODEL, else Gemma 4 26B)
+  --silent      Suppress chat signals, passed through to setup-review.sh
+  --no-model    Skip inference entirely; exercises the plumbing in seconds
+  --save-only   Report and save /tmp/pr-<N>-review.json, keep the worktree, stop.
+                For agent harnesses: a human decides, then --post-saved posts.
+  --post-saved  Post the saved review with the chosen event. Runs no model.
+                post-review.sh refuses if the PR head moved since the review.
+                To discard instead: post-review.sh <PR> (cleanup only).
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SETUP = os.path.join(SCRIPT_DIR, "setup-review.sh")
+POST = os.path.join(SCRIPT_DIR, "post-review.sh")
+
+OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+DEFAULT_MODEL = os.environ.get("PRR_LOCAL_MODEL", "gemma4-26b-a4b-32k:latest")
+
+# One context size for every call. Ollama reloads a model whenever num_ctx
+# changes, which on the 26B is ~15 s per file. 32768 matches the Modelfile pin
+# of the default tag, so the runner prime-agent loaded is reused as-is.
+NUM_CTX = int(os.environ.get("PRR_LOCAL_NUM_CTX", "32768"))
+
+POST_CHOICES = ("APPROVE", "APPROVE_BARE", "REQUEST_CHANGES", "COMMENT")
+
+# Per-call ceiling. A local box is bandwidth-bound, so a runaway context costs
+# minutes rather than cents; splitting a huge file into hunk groups is cheaper
+# than one call that thrashes.
+MAX_CHUNK_CHARS = 60_000
+
+# Files where a line-by-line read is never worth the wall time. Generated and
+# vendored content dominates diff size and produces nothing actionable.
+SKIP_PATHS = re.compile(
+    r"(^|/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|poetry\.lock|uv\.lock"
+    r"|go\.sum|Cargo\.lock|\.terraform\.lock\.hcl|.*\.min\.(js|css)|.*\.snap|.*generated.*)$"
+)
+
+FINDINGS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string", "enum": ["blocker", "notable", "nit"]},
+                    "line": {"type": "integer"},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+                "required": ["severity", "line", "title", "body"],
+            },
+        },
+        "cleared": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["findings"],
+}
+
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {"summary": {"type": "string"}},
+    "required": ["summary"],
+}
+
+REVIEW_BRIEF = """\
+You are reviewing one file from a pull request. Report only defects you can \
+justify from the lines shown.
+
+Every line is prefixed with its real line number in the new file, then a marker:
+  `+` added by this PR, ` ` unchanged context, `-` removed.
+
+Rules:
+- `line` MUST be a number you can see in the prefix of a `+` or ` ` line. Never
+  a removed line, never a number you computed yourself.
+- Report a finding only if you can name the concrete input or sequence that
+  makes it fail. No style preferences, no "consider extracting", no praise.
+- severity: `blocker` breaks correctness or security. `notable` is a real bug in
+  an edge case. `nit` is small and non-blocking.
+- `body` is the comment the author will read. Plain ASCII, no em-dashes. State
+  the failure, then the fix. Two or three sentences.
+- An empty findings list is the correct answer for a clean file. Say nothing
+  rather than inventing something.
+- `cleared`: up to three short notes on what you checked and found fine.
+"""
+
+SUMMARY_BRIEF = """\
+Write the summary body for a pull request review, given the findings below.
+
+- Two short paragraphs at most. Plain ASCII, no em-dashes, no bullet lists.
+- Say what the change does and whether it is sound.
+- Do not re-list the findings; they are posted as inline comments already.
+- If there are no findings, say what you checked and that it looks right.
+- Write like a colleague, not a report generator. No praise padding.
+"""
+
+REREVIEW_BRIEF = """\
+A prior review left findings on this pull request. Given those findings and the
+diff of what changed since, decide the status of each one.
+
+For each prior finding, output a `line` of 0 and a `body` of the form
+"<Fixed|Partially fixed|Not addressed|Unclear>: <what the evidence shows>".
+Use severity `notable` for anything not fixed, `nit` for fixed.
+Cite the file and line that resolves it, or say why you cannot tell.
+Plain ASCII, no em-dashes.
+"""
+
+# Enforced rather than requested. The hosted flow asks a model to self-check
+# these; a substitution table cannot forget.
+ASCII_MAP = {
+    "—": " - ", "–": "-", "→": "->", "⇒": "=>",
+    "←": "<-", "↔": "<->", "•": "-", "…": "...",
+    "“": '"', "”": '"', "‘": "'", "’": "'",
+    " ": " ", "≤": "<=", "≥": ">=",
+}
+
+
+def ascii_clean(text):
+    """Force the plain-ASCII prose rule, then drop anything still non-ASCII."""
+    for bad, good in ASCII_MAP.items():
+        text = text.replace(bad, good)
+    text = re.sub(r"(?i)footgun", "sharp edge", text)
+    return text.encode("ascii", "ignore").decode("ascii")
+
+
+def run(cmd, check=True, capture=True):
+    return subprocess.run(
+        cmd, check=check, text=True,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.STDOUT if capture else None,
+    )
+
+
+def ollama_chat(model, system, user, schema, num_ctx):
+    """One non-streaming call with schema-constrained output.
+
+    `think` is sent only on a retry-free first attempt: thinking models spend
+    minutes of a bandwidth-bound box on tokens that a grammar constraint then
+    discards, but older builds reject the field outright.
+    """
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "format": schema,
+        "think": False,
+        # No num_thread: it is a load-time option, so setting it would force a
+        # reload against every client that doesn't, and the model runs on the GPU.
+        "options": {"temperature": 0.15, "num_ctx": num_ctx},
+    }
+    for attempt in (1, 2):
+        req = urllib.request.Request(
+            f"{OLLAMA_URL}/api/chat",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=1800) as resp:
+                payload = json.load(resp)
+            return json.loads(payload["message"]["content"])
+        except urllib.error.HTTPError as exc:
+            if attempt == 1 and "think" in body:
+                body.pop("think")  # older Ollama: unknown field
+                continue
+            sys.exit(f"ollama error {exc.code}: {exc.read().decode()[:300]}")
+        except json.JSONDecodeError as exc:
+            sys.exit(f"ollama returned unparseable content: {exc}")
+
+
+def split_diff(diff_text):
+    """Per-file annotated hunks plus the set of anchorable line numbers.
+
+    Returns {path: {"text": annotated, "lines": {int, ...}}}. Anchorable means
+    present on the right side of the diff, which is what GitHub accepts for an
+    inline comment; removed lines are shown to the model but never offered as
+    an anchor.
+    """
+    files = {}
+    path = None
+    new_line = 0
+    usable = False
+    in_hunk = False
+
+    for raw in diff_text.splitlines():
+        if raw.startswith("diff --git "):
+            match = re.search(r" b/(.+)$", raw)
+            path = match.group(1) if match else None
+            usable = bool(path) and not SKIP_PATHS.search(path)
+            in_hunk = False
+            if usable:
+                files.setdefault(path, {"text": [], "lines": set()})
+            continue
+        if path is None or not usable:
+            continue
+        if raw.startswith("@@"):
+            match = re.search(r"\+(\d+)", raw)
+            new_line = int(match.group(1)) if match else 1
+            in_hunk = True
+            files[path]["text"].append(f"      | {raw}")
+            continue
+        # Header sniffing is only safe before the first hunk. Inside one, a
+        # removed SQL comment arrives as `--- foo` and an added `++x` as
+        # `+++x`; mistaking either for a header desyncs every line number
+        # after it, which is the one error this whole design exists to avoid.
+        if not in_hunk:
+            if raw.startswith(("Binary files", "deleted file mode")):
+                files.pop(path, None)
+                usable = False
+            continue
+        if raw.startswith("\\"):  # "\ No newline at end of file"
+            continue
+
+        if raw.startswith("+"):
+            files[path]["text"].append(f"{new_line:6}| {raw}")
+            files[path]["lines"].add(new_line)
+            new_line += 1
+        elif raw.startswith("-"):
+            files[path]["text"].append(f"      | {raw}")
+        else:
+            files[path]["text"].append(f"{new_line:6}| {raw}")
+            files[path]["lines"].add(new_line)
+            new_line += 1
+
+    return {
+        p: {"text": "\n".join(v["text"]), "lines": v["lines"]}
+        for p, v in files.items()
+        if v["lines"]
+    }
+
+
+def chunk_text(text):
+    """Split an oversized file into pieces that each stay under the ceiling."""
+    if len(text) <= MAX_CHUNK_CHARS:
+        return [text]
+    pieces, current = [], []
+    size = 0
+    for line in text.splitlines(keepends=True):
+        if size + len(line) > MAX_CHUNK_CHARS and current:
+            pieces.append("".join(current))
+            current, size = [], 0
+        current.append(line)
+        size += len(line)
+    if current:
+        pieces.append("".join(current))
+    return pieces
+
+
+def parse_setup(output):
+    """Pull the fields we need out of setup-review.sh's report."""
+    info = {}
+    for key, dest in (("repo", "repo"), ("head sha", "sha"), ("MODE", "mode")):
+        match = re.search(rf"^\s*{re.escape(key)}:\s*(\S+)", output, re.M)
+        if match:
+            info[dest] = match.group(1)
+    missing = {"repo", "sha", "mode"} - info.keys()
+    if missing:
+        sys.exit(f"could not parse setup output, missing: {', '.join(sorted(missing))}")
+    return info
+
+
+def review_files(model, chunks, pr_context, no_model):
+    """The map phase: one call per file, findings validated on the way out."""
+    findings = []
+    cleared = []
+    dropped = 0
+    total = len(chunks)
+
+    for index, (path, data) in enumerate(sorted(chunks.items()), start=1):
+        if no_model:
+            print(f"  [{index}/{total}] {path} (skipped, --no-model)")
+            continue
+        for piece in chunk_text(data["text"]):
+            started = time.time()
+            result = ollama_chat(
+                model,
+                REVIEW_BRIEF,
+                f"{pr_context}\n\nFile: {path}\n\n{piece}",
+                FINDINGS_SCHEMA,
+                NUM_CTX,
+            )
+            kept = 0
+            for item in result.get("findings", []):
+                # The model never names the file: it reviewed one, and trusting
+                # it to echo the path back is a failure mode with no upside.
+                if item.get("line") not in data["lines"]:
+                    dropped += 1
+                    continue
+                findings.append({
+                    "severity": item.get("severity", "nit"),
+                    "path": path,
+                    "line": item["line"],
+                    "title": ascii_clean(item.get("title", "")).strip(),
+                    "body": ascii_clean(item.get("body", "")).strip(),
+                })
+                kept += 1
+            cleared.extend(ascii_clean(c) for c in result.get("cleared", [])[:3])
+            print(f"  [{index}/{total}] {path}: {kept} kept, "
+                  f"{time.time() - started:.0f}s")
+
+    order = {"blocker": 0, "notable": 1, "nit": 2}
+    findings.sort(key=lambda f: (order.get(f["severity"], 3), f["path"], f["line"]))
+    return findings, cleared, dropped
+
+
+def build_summary(model, pr_context, findings, no_model):
+    if no_model:
+        return "Local pipeline check, no model pass was run."
+    digest = "\n".join(
+        f"- {f['severity']}: {f['path']}:{f['line']} {f['title']}" for f in findings
+    ) or "(no findings)"
+    result = ollama_chat(
+        model, SUMMARY_BRIEF, f"{pr_context}\n\nFindings:\n{digest}",
+        SUMMARY_SCHEMA, NUM_CTX,
+    )
+    return ascii_clean(result.get("summary", "")).strip()
+
+
+def gate(verdict, count, mode):
+    """Interactive choice. Non-interactive runs report only, never post."""
+    if mode == "self-review":
+        print("\nself-review: nothing is posted. Report above.")
+        return "none"
+    if not sys.stdin.isatty():
+        print("\nnot a tty: reporting only, nothing posted.")
+        return "none"
+
+    if verdict == "APPROVE":
+        options = [("APPROVE", f"approve with {count} inline comments"),
+                   ("APPROVE_BARE", "approve, no inline comments"),
+                   ("COMMENT", f"comment only ({count} comments), no approval"),
+                   ("none", "post nothing")]
+    else:
+        options = [("REQUEST_CHANGES", f"request changes with {count} comments"),
+                   ("COMMENT", f"comment only ({count} comments), do not block"),
+                   ("none", "post nothing")]
+
+    print()
+    for number, (_, label) in enumerate(options, start=1):
+        print(f"  {number}) {label}")
+    while True:
+        choice = input(f"\nchoice [1-{len(options)}]: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            return options[int(choice) - 1][0]
+        print("pick a number from the list.")
+
+
+def selftest():
+    """Assert the line arithmetic, including the lines that look like headers.
+
+    Run with --selftest. No framework, no network, no PR needed.
+    """
+    diff = (
+        "diff --git a/q.sql b/q.sql\n"
+        "index 111..222 100644\n"
+        "--- a/q.sql\n"
+        "+++ b/q.sql\n"
+        "@@ -10,3 +10,4 @@ context\n"
+        " select 1;\n"
+        "--- legacy note\n"          # a removed `-- legacy note`
+        "+++x = 1;\n"                # an added `++x = 1;`
+        "+select 2;\n"
+        "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n"
+        "@@ -1,2 +1,2 @@\n"
+        "+noise\n"
+        "diff --git a/img.png b/img.png\n"
+        "Binary files a/img.png and b/img.png differ\n"
+    )
+    out = split_diff(diff)
+    assert set(out) == {"q.sql"}, f"skip/binary handling: {sorted(out)}"
+    # 10 context, 11 added (`++x = 1;`), 12 added. The removed line consumes no
+    # right-side number. Getting this wrong shifts every later anchor.
+    assert out["q.sql"]["lines"] == {10, 11, 12}, out["q.sql"]["lines"]
+    assert "    11| +++x = 1;" in out["q.sql"]["text"], out["q.sql"]["text"]
+    assert ascii_clean("a—b → c “d”") == 'a - b -> c "d"'
+    assert ascii_clean("a Footgun here") == "a sharp edge here"
+    # Splits on line boundaries only, so an oversized file yields >1 piece and
+    # every line survives exactly once.
+    big = ("x" * 80 + "\n") * (MAX_CHUNK_CHARS // 40)
+    pieces = chunk_text(big)
+    assert len(pieces) > 1 and "".join(pieces) == big, len(pieces)
+    # A saved review carries state GitHub must never see; each choice yields
+    # only the payload keys, and APPROVE_BARE drops the inline comments.
+    state = {"pr": "7", "repo": "o/r", "commit_id": "abc", "mode": "first-review",
+             "model": "m", "proposed_verdict": "APPROVE", "summary": "Fine.",
+             "findings": [{"severity": "nit", "path": "q.sql", "line": 11,
+                           "title": "t", "body": "b"}]}
+    keys = {"commit_id", "event", "body", "comments", "slack_summary"}
+    for choice in POST_CHOICES:
+        payload = build_payload(state, choice)
+        assert set(payload) == keys, (choice, sorted(payload))
+    bare = build_payload(state, "APPROVE_BARE")
+    assert bare["event"] == "APPROVE" and bare["comments"] == [], bare
+    full = build_payload(state, "COMMENT")
+    assert full["comments"] == [{"path": "q.sql", "line": 11, "side": "RIGHT", "body": "b"}]
+    assert "no verdict" in full["slack_summary"], full["slack_summary"]
+    try:
+        build_payload(state, "none")
+        raise AssertionError("an unknown choice must not build a payload")
+    except ValueError:
+        pass
+    print("selftest ok")
+
+
+def main():
+    if "--selftest" in sys.argv:
+        return selftest()
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("pr")
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--silent", action="store_true")
+    parser.add_argument("--no-model", action="store_true")
+    parser.add_argument("--save-only", action="store_true")
+    parser.add_argument("--post-saved", choices=POST_CHOICES, metavar="CHOICE")
+    args = parser.parse_args()
+    if args.post_saved:
+        return post_saved(args.pr, args.post_saved)
+
+    number_match = re.search(r"(\d+)\s*$", args.pr)
+    if not number_match:
+        sys.exit("could not read a PR number from that argument")
+    number = number_match.group(1)
+
+    setup_cmd = [SETUP] + (["--silent"] if args.silent else []) + [args.pr]
+    setup = run(setup_cmd, check=False)
+    print(setup.stdout, end="")
+    if setup.returncode != 0:
+        sys.exit(f"setup-review.sh failed ({setup.returncode})")
+    info = parse_setup(setup.stdout)
+
+    posted = False
+    try:
+        view = json.load(open(f"/tmp/pr-{number}-view.json"))
+        diff_path = f"/tmp/pr-{number}-diff.txt"
+        if info["mode"] == "re-review":
+            since = f"/tmp/pr-{number}-since-diff.txt"
+            diff_path = since if os.path.exists(since) else diff_path
+        diff_text = open(diff_path, encoding="utf-8", errors="replace").read()
+
+        pr_context = (
+            f"Pull request: {view.get('title', '')}\n"
+            f"Description:\n{(view.get('body') or '(none)')[:4000]}"
+        )
+
+        chunks = split_diff(diff_text)
+        if not chunks:
+            print("\nnothing reviewable in the diff (generated or binary only).")
+        print(f"\nreviewing {len(chunks)} file(s) with {args.model}, "
+              f"single-source (Source A only)\n")
+
+        findings, cleared, dropped = review_files(
+            args.model, chunks, pr_context, args.no_model
+        )
+        summary = build_summary(args.model, pr_context, findings, args.no_model)
+
+        verdict = ("REQUEST_CHANGES"
+                   if any(f["severity"] == "blocker" for f in findings)
+                   else "APPROVE")
+
+        print("\n" + "=" * 72)
+        print(f"SINGLE-SOURCE local review of #{number} ({info['repo']})")
+        print(f"model: {args.model}   head: {info['sha'][:12]}   mode: {info['mode']}")
+        print("=" * 72)
+        for finding in findings:
+            print(f"\n[{finding['severity']}] {finding['path']}:{finding['line']}")
+            print(f"  {finding['title']}")
+            for line in finding["body"].splitlines():
+                print(f"    {line}")
+        if not findings:
+            print("\nno findings.")
+        if cleared:
+            print("\nchecked and found fine:")
+            for item in cleared:
+                print(f"  - {item}")
+        if dropped:
+            print(f"\n{dropped} finding(s) dropped: line not anchorable in the diff.")
+        print(f"\nsummary body:\n{summary}")
+        print(f"\nproposed verdict: {verdict}")
+        print("\nThis was one pass by a local model. It is weaker than the "
+              "dual-source flow:\nverify anything you would not have caught "
+              "yourself before posting it.")
+
+        state = {
+            "pr": args.pr,
+            "repo": info["repo"],
+            "commit_id": info["sha"],
+            "mode": info["mode"],
+            "model": args.model,
+            "proposed_verdict": verdict,
+            "summary": ascii_clean(summary),
+            "findings": findings,
+        }
+
+        if args.save_only:
+            with open(saved_path(number), "w") as handle:
+                json.dump(state, handle, indent=2)
+            # The worktree stays for the human's decision; the finally block
+            # below must not clean it up.
+            posted = True
+            print(f"\nsaved {saved_path(number)}. Nothing was posted.")
+            print(f"  post:    prr-local.py {args.pr} --post-saved <CHOICE>  "
+                  f"({', '.join(POST_CHOICES)})")
+            print(f"  discard: {POST} {args.pr}")
+            return
+
+        choice = gate(verdict, len(findings), info["mode"])
+        if choice == "none":
+            return
+        code = post_payload(state, choice, number)
+        if code != 0:
+            sys.exit(f"post-review.sh failed ({code})")
+        posted = True
+    finally:
+        # Cleanup is unconditional in prr, and a half-posted run must still
+        # remove the worktree. post-review.sh with no payload does that.
+        if not posted:
+            run([POST, args.pr], check=False, capture=False)
+
+
+def saved_path(number):
+    return f"/tmp/pr-{number}-review.json"
+
+
+def build_payload(state, choice):
+    """The reviews-endpoint payload for one choice, plus post-review.sh's
+    slack_summary. Only these keys: the saved state carries more, and anything
+    extra would be sent to GitHub."""
+    if choice not in POST_CHOICES:
+        raise ValueError(f"choice must be one of {', '.join(POST_CHOICES)}")
+    event = "APPROVE" if choice == "APPROVE_BARE" else choice
+    comments = [] if choice == "APPROVE_BARE" else [
+        {"path": f["path"], "line": f["line"], "side": "RIGHT", "body": f["body"]}
+        for f in state["findings"]
+    ]
+    noun = "comment" if len(comments) == 1 else "comments"
+    slack = {
+        "APPROVE": f"Reviewed it, looks good, approved with {len(comments)} {noun}.",
+        "REQUEST_CHANGES": f"Took a look, left {len(comments)} {noun} to sort out.",
+        "COMMENT": f"Read through it, left {len(comments)} {noun}, no verdict yet.",
+    }[event]
+    if event == "APPROVE" and not comments:
+        slack = "Reviewed it, looks good to me, approved."
+    return {
+        "commit_id": state["commit_id"],
+        "event": event,
+        "body": state["summary"],
+        "comments": comments,
+        "slack_summary": ascii_clean(slack),
+    }
+
+
+def post_payload(state, choice, number):
+    """Write the payload and hand it to post-review.sh, which checks the head
+    sha, posts, signals chat and removes the worktree."""
+    payload_path = f"/tmp/pr-{number}-post.json"
+    with open(payload_path, "w") as handle:
+        json.dump(build_payload(state, choice), handle, indent=2)
+    return run([POST, state["pr"], payload_path, state["repo"]],
+               check=False, capture=False).returncode
+
+
+def post_saved(pr, choice):
+    """The second half of --save-only: no model, just the saved findings."""
+    number_match = re.search(r"(\d+)\s*$", pr)
+    if not number_match:
+        sys.exit("could not read a PR number from that argument")
+    number = number_match.group(1)
+    try:
+        state = json.load(open(saved_path(number)))
+    except FileNotFoundError:
+        sys.exit(f"no saved review at {saved_path(number)}: run with --save-only first")
+    if state.get("mode") == "self-review":
+        sys.exit("this was a self-review: prr never posts those.")
+    code = post_payload(state, choice, number)
+    if code == 0:
+        os.remove(saved_path(number))
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()

@@ -8,7 +8,8 @@ a local model as a reviewer, and says so in its report.
 
 Status (2026-09-30): no local model tested so far is accurate enough to trust
 (qwen3:8b, qwen2.5-coder:7b, gemma4:26b-a4b-it-qat; no finding survived
-checking). The pipeline is kept so a new model is one --model flag away.
+checking, with or without capped thinking). The pipeline is kept so a new model
+is one --model flag away.
 
 The design point: a local quantized model is weakest at exactly the things a
 review payload demands (strict schema, precise line numbers recalled from a
@@ -29,11 +30,16 @@ artifacts, post-review.sh validates the head sha, posts, signals chat, and
 cleans up. Neither cares which model produced the findings.
 
 Usage:
-  prr-local.py <PR> [--model NAME] [--silent] [--no-model] [--save-only]
+  prr-local.py <PR> [--model NAME] [--think | --think-budget N] [--silent] [--no-model] [--save-only]
   prr-local.py <PR> --post-saved APPROVE|APPROVE_BARE|REQUEST_CHANGES|COMMENT
   prr-local.py --selftest
 
   --model       Ollama model tag (default: $PRR_LOCAL_MODEL, else Gemma 4 26B)
+  --think       Let the model reason before each file's findings. Slower,
+                uncapped, and only the findings are kept, never the reasoning.
+  --think-budget N  Cap the reasoning at N tokens per call (implies --think).
+                At the cap the model is stopped and asked to answer from its
+                notes so far, as hearth's Think setting does.
   --silent      Suppress chat signals, passed through to setup-review.sh
   --no-model    Skip inference entirely; exercises the plumbing in seconds
   --save-only   Report and save /tmp/pr-<N>-review.json, keep the worktree, stop.
@@ -41,6 +47,9 @@ Usage:
   --post-saved  Post the saved review with the chosen event. Runs no model.
                 post-review.sh refuses if the PR head moved since the review.
                 To discard instead: post-review.sh <PR> (cleanup only).
+
+Every review run also logs to /tmp/prr-local-<N>.log as it goes (tail -f it
+from another terminal); cleanup leaves the log in place.
 """
 
 import argparse
@@ -174,22 +183,30 @@ def run(cmd, check=True, capture=True):
     )
 
 
-def ollama_chat(model, system, user, schema, num_ctx):
+def ollama_chat(model, system, user, schema, num_ctx, think=False, stats=None,
+                budget=0, extra=None):
     """One non-streaming call with schema-constrained output.
 
-    `think` is sent only on a retry-free first attempt: thinking models spend
-    minutes of a bandwidth-bound box on tokens that a grammar constraint then
-    discards, but older builds reject the field outright.
+    `think: false` is dropped on a retry: thinking models spend minutes of a
+    bandwidth-bound box on reasoning, but older builds reject the field
+    outright. `think: true` (--think) is never dropped silently. The reasoning
+    arrives apart from the schema-constrained content; its length goes into
+    `stats`, and the text itself is discarded. With a `budget` the reasoning is
+    capped (see ollama_chat_budgeted); without one, nothing stops a long think
+    short of the request timeout. `extra` messages follow the user's.
     """
+    if think and budget:
+        return ollama_chat_budgeted(model, system, user, schema, num_ctx, budget, stats)
     body = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
+            *(extra or []),
         ],
         "stream": False,
         "format": schema,
-        "think": False,
+        "think": think,
         # No num_thread: it is a load-time option, so setting it would force a
         # reload against every client that doesn't, and the model runs on the GPU.
         "options": {"temperature": 0.15, "num_ctx": num_ctx},
@@ -203,14 +220,83 @@ def ollama_chat(model, system, user, schema, num_ctx):
         try:
             with urllib.request.urlopen(req, timeout=1800) as resp:
                 payload = json.load(resp)
+            if stats is not None:
+                stats["thinking_chars"] = len(payload["message"].get("thinking") or "")
             return json.loads(payload["message"]["content"])
         except urllib.error.HTTPError as exc:
-            if attempt == 1 and "think" in body:
+            if attempt == 1 and body.get("think") is False:
                 body.pop("think")  # older Ollama: unknown field
                 continue
             sys.exit(f"ollama error {exc.code}: {exc.read().decode()[:300]}")
         except json.JSONDecodeError as exc:
             sys.exit(f"ollama returned unparseable content: {exc}")
+
+
+def consume_thinking(lines, budget):
+    """Read streamed /api/chat lines until the reasoning reaches `budget` chunks
+    (Ollama streams about one token per chunk). Returns (notes, content, cut)."""
+    notes, content, tokens = [], [], 0
+    for raw in lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        data = json.loads(raw)
+        if data.get("error"):
+            raise RuntimeError(data["error"])
+        message = data.get("message") or {}
+        if message.get("thinking"):
+            notes.append(message["thinking"])
+            tokens += 1
+            if tokens >= budget:
+                return "".join(notes), "", True
+        if message.get("content"):
+            content.append(message["content"])
+    return "".join(notes), "".join(content), False
+
+
+def ollama_chat_budgeted(model, system, user, schema, num_ctx, budget, stats):
+    """Budget forcing, as in hearth's thinking replies: stream with thinking on,
+    hang up at `budget` reasoning tokens, then ask again with thinking off and
+    the reasoning so far handed back as notes. A model that finishes under the
+    budget answers in the first call."""
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": True,
+        "format": schema,
+        "think": True,
+        "options": {"temperature": 0.15, "num_ctx": num_ctx},
+    }
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/chat",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        # Leaving the `with` closes the connection, which stops generation.
+        with urllib.request.urlopen(req, timeout=1800) as resp:
+            notes, content, cut = consume_thinking(resp, budget)
+    except urllib.error.HTTPError as exc:
+        sys.exit(f"ollama error {exc.code}: {exc.read().decode()[:300]}")
+    except RuntimeError as exc:
+        sys.exit(f"ollama error: {exc}")
+    if stats is not None:
+        stats["thinking_chars"] = len(notes)
+        stats["cut"] = cut
+    if not cut:
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            sys.exit(f"ollama returned unparseable content: {exc}")
+    answer_now = {
+        "role": "user",
+        "content": "(Your private reasoning so far, not shown to me:)\n"
+                   f"{notes}\n\nThinking time is up. Give your findings now.",
+    }
+    return ollama_chat(model, system, user, schema, num_ctx, extra=[answer_now])
 
 
 def split_diff(diff_text):
@@ -304,7 +390,7 @@ def parse_setup(output):
     return info
 
 
-def review_files(model, chunks, pr_context, no_model):
+def review_files(model, chunks, pr_context, no_model, think=False, budget=0):
     """The map phase: one call per file, findings validated on the way out."""
     findings = []
     cleared = []
@@ -317,12 +403,16 @@ def review_files(model, chunks, pr_context, no_model):
             continue
         for piece in chunk_text(data["text"]):
             started = time.time()
+            stats = {}
             result = ollama_chat(
                 model,
                 REVIEW_BRIEF,
                 f"{pr_context}\n\nFile: {path}\n\n{piece}",
                 FINDINGS_SCHEMA,
                 NUM_CTX,
+                think=think,
+                stats=stats,
+                budget=budget,
             )
             kept = 0
             for item in result.get("findings", []):
@@ -340,8 +430,11 @@ def review_files(model, chunks, pr_context, no_model):
                 })
                 kept += 1
             cleared.extend(ascii_clean(c) for c in result.get("cleared", [])[:3])
+            thought = (f", thought {stats['thinking_chars']} chars"
+                       f"{' (cut at budget)' if stats.get('cut') else ''}"
+                       if think else "")
             print(f"  [{index}/{total}] {path}: {kept} kept, "
-                  f"{time.time() - started:.0f}s")
+                  f"{time.time() - started:.0f}s{thought}")
 
     order = {"blocker": 0, "notable": 1, "nit": 2}
     findings.sort(key=lambda f: (order.get(f["severity"], 3), f["path"], f["line"]))
@@ -444,6 +537,25 @@ def selftest():
         raise AssertionError("an unknown choice must not build a payload")
     except ValueError:
         pass
+    # Budget forcing: stop at the budget without reading on, and pass a
+    # finished-early reply through whole.
+    def stream(*parts):
+        return [json.dumps({"message": p}).encode() + b"\n" for p in parts]
+    long_think = stream(*({"thinking": f"t{i} "} for i in range(10)), {"content": "{}"})
+    notes, content, cut = consume_thinking(long_think, 3)
+    assert cut and notes == "t0 t1 t2 " and content == "", (notes, content, cut)
+    short_think = stream({"thinking": "a"}, {"thinking": "b"},
+                         {"content": '{"findings"'}, {"content": ": []}"})
+    notes, content, cut = consume_thinking(short_think, 3)
+    assert not cut and notes == "ab" and json.loads(content) == {"findings": []}
+    try:
+        consume_thinking([b'{"error": "model crashed"}\n'], 3)
+        raise AssertionError("a streamed error must not be swallowed")
+    except RuntimeError:
+        pass
+    # post-review.sh removes every /tmp/pr-<N>-* file; the log must not match.
+    import fnmatch
+    assert not fnmatch.fnmatch(log_path("7"), "/tmp/pr-7-*"), log_path("7")
     print("selftest ok")
 
 
@@ -457,8 +569,15 @@ def main():
     parser.add_argument("--silent", action="store_true")
     parser.add_argument("--no-model", action="store_true")
     parser.add_argument("--save-only", action="store_true")
+    parser.add_argument("--think", action="store_true",
+                        help="let the model reason before each file's findings (slower)")
+    parser.add_argument("--think-budget", type=int, default=0, metavar="N",
+                        help="cap the reasoning at N tokens per call; implies --think")
     parser.add_argument("--post-saved", choices=POST_CHOICES, metavar="CHOICE")
     args = parser.parse_args()
+    if args.think_budget < 0:
+        parser.error("--think-budget must be positive")
+    args.think = args.think or args.think_budget > 0
     if args.post_saved:
         return post_saved(args.pr, args.post_saved)
 
@@ -466,6 +585,7 @@ def main():
     if not number_match:
         sys.exit("could not read a PR number from that argument")
     number = number_match.group(1)
+    start_log(number)
 
     setup_cmd = [SETUP] + (["--silent"] if args.silent else []) + [args.pr]
     setup = run(setup_cmd, check=False)
@@ -491,11 +611,13 @@ def main():
         chunks = split_diff(diff_text)
         if not chunks:
             print("\nnothing reviewable in the diff (generated or binary only).")
-        print(f"\nreviewing {len(chunks)} file(s) with {args.model}, "
+        print(f"\nreviewing {len(chunks)} file(s) with {args.model}"
+              f"{think_label(args)}, "
               f"single-source (Source A only)\n")
 
         findings, cleared, dropped = review_files(
-            args.model, chunks, pr_context, args.no_model
+            args.model, chunks, pr_context, args.no_model, think=args.think,
+            budget=args.think_budget,
         )
         summary = build_summary(args.model, pr_context, findings, args.no_model)
 
@@ -505,7 +627,7 @@ def main():
 
         print("\n" + "=" * 72)
         print(f"SINGLE-SOURCE local review of #{number} ({info['repo']})")
-        print(f"model: {args.model}   head: {info['sha'][:12]}   mode: {info['mode']}")
+        print(f"model: {args.model}{think_label(args)}   head: {info['sha'][:12]}   mode: {info['mode']}")
         print("=" * 72)
         for finding in findings:
             print(f"\n[{finding['severity']}] {finding['path']}:{finding['line']}")
@@ -532,6 +654,8 @@ def main():
             "commit_id": info["sha"],
             "mode": info["mode"],
             "model": args.model,
+            "think": args.think,
+            "think_budget": args.think_budget,
             "proposed_verdict": verdict,
             "summary": ascii_clean(summary),
             "findings": findings,
@@ -561,6 +685,46 @@ def main():
         # remove the worktree. post-review.sh with no payload does that.
         if not posted:
             run([POST, args.pr], check=False, capture=False)
+
+
+def think_label(args):
+    if not args.think:
+        return ""
+    return f" (thinking, <={args.think_budget} tokens)" if args.think_budget else " (thinking, uncapped)"
+
+
+class Tee:
+    """Every line to the terminal (or whatever launched us) and to a log file,
+    flushed as it goes. A killed run keeps its progress, and a harness that
+    only shows output when the script ends can be followed with tail -f."""
+
+    def __init__(self, stream, log):
+        self.stream, self.log = stream, log
+
+    def write(self, text):
+        self.stream.write(text)
+        self.stream.flush()
+        self.log.write(text)
+        self.log.flush()
+
+    def flush(self):
+        self.stream.flush()
+        self.log.flush()
+
+
+def log_path(number):
+    return f"/tmp/prr-local-{number}.log"
+
+
+def start_log(number):
+    """Log a review run to /tmp/prr-local-<N>.log. Deliberately outside the
+    /tmp/pr-<N>-* prefix post-review.sh sweeps: the log is most useful after a
+    run that failed or was killed, which is exactly when cleanup has run."""
+    path = log_path(number)
+    log = open(path, "w", encoding="utf-8")
+    sys.stdout = Tee(sys.stdout, log)
+    sys.stderr = Tee(sys.stderr, log)
+    print(f"log: {path}   started {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 def saved_path(number):

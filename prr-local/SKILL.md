@@ -10,7 +10,8 @@ description: Review a GitHub pull request with the local Ollama model, as a sing
 > Across three PRs with known-good answers, not one finding survived checking.
 > The misses were judgement, not speed or anchoring: findings that re-raise
 > problems the author's own comments already handle, or fixes that would break
-> the code. Treat the output as a reading aid, and verify every finding before
+> the code. Capped thinking (`--think-budget`) cut the noise but kept a
+> confident, wrong blocker. Treat the output as a reading aid, and verify every finding before
 > posting. This skill is kept so the next model can be tried without rebuilding
 > it.
 
@@ -34,7 +35,10 @@ costs more than the pipeline does and produces worse anchors. Run the script.
 python3 ~/.claude/skills/prr/scripts/prr-local.py <PR-url-or-number> --save-only
 ```
 
-Add `--silent` to suppress chat signals. The default model is
+Add `--silent` to suppress chat signals, and `--think-budget N` to let the
+model reason for up to N tokens per file first (never plain `--think`: it is
+uncapped and can run for many minutes on one file). Progress goes to
+`/tmp/prr-local-<N>.log`. The default model is
 `gemma4-26b-a4b-32k:latest` (override with `--model` or `$PRR_LOCAL_MODEL`).
 It makes one call per changed file, so time scales with the file count: expect
 seconds to a minute per file, plus ~15 s if the model has to load first. Stream

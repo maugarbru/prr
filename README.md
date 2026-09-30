@@ -617,7 +617,9 @@ you never add the `statusLine` block nothing reads it and there is no effect.
 
 > **No local model tested so far is accurate enough to trust**
 > (`qwen3:8b`, `qwen2.5-coder:7b`, `gemma4:26b-a4b-it-qat` as of 2026-09-30;
-> no finding survived checking). It is here so a new model can be tried
+> no finding survived checking). Letting Gemma think first (`--think-budget`)
+> cut the noise but kept a confident, wrong blocker, and uncapped thinking ran
+> for over ten minutes on one file. It is here so a new model can be tried
 > without rebuilding the pipeline.
 
 `scripts/prr-local.py` runs a single-source review (no security pass) against
@@ -630,6 +632,7 @@ check, re-review detection and cleanup behave as in prr.
 
 ```
 python3 scripts/prr-local.py <PR> [--model TAG] [--silent]         # interactive gate
+python3 scripts/prr-local.py <PR> --think-budget 1000 --save-only  # reason first, capped per file
 python3 scripts/prr-local.py <PR> --save-only                      # report, save, stop
 python3 scripts/prr-local.py <PR> --post-saved APPROVE|APPROVE_BARE|REQUEST_CHANGES|COMMENT
 python3 scripts/prr-local.py <PR> --no-model --silent --save-only  # plumbing check, no model
@@ -638,7 +641,11 @@ python3 scripts/prr-local.py --selftest
 
 The model comes from `--model`, else `$PRR_LOCAL_MODEL`. Every call uses one
 context size (`$PRR_LOCAL_NUM_CTX`, default 32768), because Ollama reloads a
-model whenever it changes. `prr-local/SKILL.md` is for agent harnesses running
+model whenever it changes. `--think` lets the model reason before each file's
+findings. It is uncapped, so prefer `--think-budget N`, which stops the reasoning
+at N tokens and asks for findings from the notes so far. Every review run
+logs to `/tmp/prr-local-<N>.log` as it goes (`tail -f` it; cleanup leaves it
+in place). `prr-local/SKILL.md` is for agent harnesses running
 a local model. It sits inside this directory, so Claude Code (which finds only
 top-level skills) never loads it. Point the harness at that path, and not at
 prr's own `SKILL.md`, which is far too long for a local context window.

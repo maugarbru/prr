@@ -31,7 +31,7 @@ cleans up. Neither cares which model produced the findings.
 
 Usage:
   prr-local.py <PR> [--model NAME] [--think | --think-budget N] [--silent] [--no-model] [--save-only]
-  prr-local.py <PR> --post-saved APPROVE|APPROVE_BARE|REQUEST_CHANGES|COMMENT
+  prr-local.py <PR> --post-saved APPROVE|APPROVE_BARE|REQUEST_CHANGES|COMMENT|DISCARD
   prr-local.py --selftest
 
   --model       Ollama model tag (default: $PRR_LOCAL_MODEL, else Gemma 4 26B)
@@ -46,7 +46,8 @@ Usage:
                 For agent harnesses: a human decides, then --post-saved posts.
   --post-saved  Post the saved review with the chosen event. Runs no model.
                 post-review.sh refuses if the PR head moved since the review.
-                To discard instead: post-review.sh <PR> (cleanup only).
+                DISCARD posts nothing: it clears the chat :eyes: and removes
+                the worktree and saved review (post-review.sh cleanup only).
 
 Every review run also logs to /tmp/prr-local-<N>.log as it goes (tail -f it
 from another terminal); cleanup leaves the log in place.
@@ -75,6 +76,8 @@ DEFAULT_MODEL = os.environ.get("PRR_LOCAL_MODEL", "gemma4-26b-a4b-32k:latest")
 NUM_CTX = int(os.environ.get("PRR_LOCAL_NUM_CTX", "32768"))
 
 POST_CHOICES = ("APPROVE", "APPROVE_BARE", "REQUEST_CHANGES", "COMMENT")
+# What --post-saved accepts: a posting choice, or DISCARD to drop the review.
+SAVED_CHOICES = POST_CHOICES + ("DISCARD",)
 
 # Per-call ceiling. A local box is bandwidth-bound, so a runaway context costs
 # minutes rather than cents; splitting a huge file into hunk groups is cheaper
@@ -573,7 +576,7 @@ def main():
                         help="let the model reason before each file's findings (slower)")
     parser.add_argument("--think-budget", type=int, default=0, metavar="N",
                         help="cap the reasoning at N tokens per call; implies --think")
-    parser.add_argument("--post-saved", choices=POST_CHOICES, metavar="CHOICE")
+    parser.add_argument("--post-saved", choices=SAVED_CHOICES, metavar="CHOICE")
     args = parser.parse_args()
     if args.think_budget < 0:
         parser.error("--think-budget must be positive")
@@ -668,9 +671,9 @@ def main():
             # below must not clean it up.
             posted = True
             print(f"\nsaved {saved_path(number)}. Nothing was posted.")
-            print(f"  post:    prr-local.py {args.pr} --post-saved <CHOICE>  "
-                  f"({', '.join(POST_CHOICES)})")
-            print(f"  discard: {POST} {args.pr}")
+            print(f"  decide:  prr-local.py {args.pr} --post-saved <CHOICE>  "
+                  f"({', '.join(SAVED_CHOICES)})")
+            print("  DISCARD posts nothing and cleans up.")
             return
 
         choice = gate(verdict, len(findings), info["mode"])
@@ -775,6 +778,10 @@ def post_saved(pr, choice):
     if not number_match:
         sys.exit("could not read a PR number from that argument")
     number = number_match.group(1)
+    if choice == "DISCARD":
+        # Cleanup-only mode: nothing posted, :eyes: cleared, worktree and the
+        # saved review (a /tmp/pr-<N>-* artifact) removed.
+        sys.exit(run([POST, pr], check=False, capture=False).returncode)
     try:
         state = json.load(open(saved_path(number)))
     except FileNotFoundError:
@@ -783,7 +790,12 @@ def post_saved(pr, choice):
         sys.exit("this was a self-review: prr never posts those.")
     code = post_payload(state, choice, number)
     if code == 0:
-        os.remove(saved_path(number))
+        # post-review.sh's cleanup usually removed it already (it clears every
+        # /tmp/pr-<N>-* artifact); this catches a run where it didn't.
+        try:
+            os.remove(saved_path(number))
+        except FileNotFoundError:
+            pass
     sys.exit(code)
 
 

@@ -5,6 +5,8 @@ description: Review a GitHub pull request with the local Ollama model, as a sing
 
 # prr-local
 
+**When invoked, run the review command below on the given PR right away; ask for the PR only if none was given.**
+
 > **Status (2026-09-30): no local model tested so far is accurate enough to
 > trust.** Tried: `qwen3:8b`, `qwen2.5-coder:7b` and `gemma4:26b-a4b-it-qat`.
 > Across three PRs with known-good answers, not one finding survived checking.
@@ -68,15 +70,13 @@ python3 ~/.claude/skills/prr/scripts/prr-local.py <PR> --post-saved APPROVE
 ```
 
 Valid choices: `APPROVE`, `APPROVE_BARE` (approve with no inline comments),
-`REQUEST_CHANGES`, `COMMENT`. This runs no inference; it posts the saved
+`REQUEST_CHANGES`, `COMMENT`, and `DISCARD` (post nothing). When you ask the
+user to choose, always list `DISCARD` too. This runs no inference; it posts the saved
 review and cleans up. If commits landed since the review, it refuses rather
 than posting a stale review, which is correct: re-run the review.
 
-If the user declines, discard the review and remove the worktree:
-
-```
-~/.claude/skills/prr/scripts/post-review.sh <PR>
-```
+If the user declines, discard: `--post-saved DISCARD` posts nothing, clears the
+chat :eyes: marker, and removes the worktree and the saved review.
 
 Do not hand-edit the saved file, and do not post with `gh` directly. The script
 builds the payload from it, and post-review.sh validates the head sha.

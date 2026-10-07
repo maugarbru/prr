@@ -31,7 +31,7 @@ cleans up. Neither cares which model produced the findings.
 
 Usage:
   prr-local.py <PR> [--model NAME] [--think | --think-budget N] [--silent] [--no-model] [--save-only]
-  prr-local.py <PR> --post-saved APPROVE|APPROVE_BARE|REQUEST_CHANGES|COMMENT|DISCARD
+  prr-local.py <PR> --post-saved APPROVE|APPROVE_BARE|REQUEST_CHANGES|COMMENT|DISCARD [--note TEXT]
   prr-local.py --selftest
 
   --model       Ollama model tag (default: $PRR_LOCAL_MODEL, else Gemma 4 26B)
@@ -48,6 +48,8 @@ Usage:
                 post-review.sh refuses if the PR head moved since the review.
                 DISCARD posts nothing: it clears the chat :eyes: and removes
                 the worktree and saved review (post-review.sh cleanup only).
+  --note TEXT   Your own words, appended verbatim to the end of the review body
+                (any choice except DISCARD). Also applies at the interactive gate.
 
 Every review run also logs to /tmp/prr-local-<N>.log as it goes (tail -f it
 from another terminal); cleanup leaves the log in place.
@@ -136,6 +138,24 @@ Rules:
   the failure, then the fix. Two or three sentences.
 - An empty findings list is the correct answer for a clean file. Say nothing
   rather than inventing something.
+- `cleared`: up to three short notes on what you checked and found fine.
+"""
+
+DELETED_BRIEF = """\
+This file is deleted by the pull request. Every line shown is removed. Use the \
+PR overview to see what else changed.
+
+Report a finding only for a concrete problem the deletion itself causes:
+- something the PR keeps still depends on what this file provided, or
+- behaviour the PR description says is kept is lost with it (an auth check,
+  error mapping, validation) and nothing in the overview replaces it.
+
+Rules:
+- `line` is always 0: a deleted file has no lines to comment on.
+- severity and `body` follow the usual rules: name the failure, then the fix.
+  Plain ASCII, no em-dashes. Two or three sentences.
+- A deletion the PR intends, with nothing left depending on it, is clean:
+  return an empty findings list. Say nothing rather than inventing something.
 - `cleared`: up to three short notes on what you checked and found fine.
 """
 
@@ -338,9 +358,13 @@ def split_diff(diff_text):
         # `+++x`; mistaking either for a header desyncs every line number
         # after it, which is the one error this whole design exists to avoid.
         if not in_hunk:
-            if raw.startswith(("Binary files", "deleted file mode")):
+            if raw.startswith("Binary files"):
                 files.pop(path, None)
                 usable = False
+            elif raw.startswith("deleted file mode"):
+                # Context only: no right-side lines, so nothing to anchor, but
+                # in a removal PR what disappeared is the substance.
+                files[path]["deleted"] = True
             continue
         if raw.startswith("\\"):  # "\ No newline at end of file"
             continue
@@ -357,10 +381,46 @@ def split_diff(diff_text):
             new_line += 1
 
     return {
-        p: {"text": "\n".join(v["text"]), "lines": v["lines"]}
+        p: {"text": "\n".join(v["text"]), "lines": v["lines"],
+            "deleted": v.get("deleted", False)}
         for p, v in files.items()
-        if v["lines"]
+        if v["lines"] or v.get("deleted")
     }
+
+
+def diff_overview(diff_text):
+    """One line per changed file: added, deleted, renamed or modified, and
+    whether this pipeline skips it. Each file is reviewed alone, so this is
+    the only view a call gets of the rest of the PR."""
+    entries, current, in_hunk = [], None, False
+    for raw in diff_text.splitlines():
+        if raw.startswith("diff --git "):
+            match = re.search(r" b/(.+)$", raw)
+            current = {"path": match.group(1) if match else "?", "status": "modified"}
+            entries.append(current)
+            in_hunk = False
+            continue
+        if current is None or in_hunk:
+            continue
+        if raw.startswith("@@"):
+            in_hunk = True
+        elif raw.startswith("new file mode"):
+            current["status"] = "added"
+        elif raw.startswith("deleted file mode"):
+            current["status"] = "deleted"
+        elif raw.startswith("rename from "):
+            current["status"] = f"renamed from {raw[len('rename from '):]}"
+        elif raw.startswith("Binary files"):
+            current["binary"] = True
+    lines = []
+    for e in entries:
+        note = ""
+        if e.get("binary"):
+            note = " (binary, not reviewed)"
+        elif SKIP_PATHS.search(e["path"]):
+            note = " (generated or lock file, not reviewed)"
+        lines.append(f"- {e['status']}: {e['path']}{note}")
+    return "PR overview, every changed file:\n" + "\n".join(lines)
 
 
 def chunk_text(text):
@@ -409,8 +469,9 @@ def review_files(model, chunks, pr_context, no_model, think=False, budget=0):
             stats = {}
             result = ollama_chat(
                 model,
-                REVIEW_BRIEF,
-                f"{pr_context}\n\nFile: {path}\n\n{piece}",
+                DELETED_BRIEF if data["deleted"] else REVIEW_BRIEF,
+                f"{pr_context}\n\nFile: {path}"
+                f"{' (deleted by this PR)' if data['deleted'] else ''}\n\n{piece}",
                 FINDINGS_SCHEMA,
                 NUM_CTX,
                 think=think,
@@ -421,13 +482,19 @@ def review_files(model, chunks, pr_context, no_model, think=False, budget=0):
             for item in result.get("findings", []):
                 # The model never names the file: it reviewed one, and trusting
                 # it to echo the path back is a failure mode with no upside.
-                if item.get("line") not in data["lines"]:
+                # A deleted file's findings have no anchor (line None) and go
+                # in the review body instead of inline.
+                if data["deleted"]:
+                    line = None
+                elif item.get("line") in data["lines"]:
+                    line = item["line"]
+                else:
                     dropped += 1
                     continue
                 findings.append({
                     "severity": item.get("severity", "nit"),
                     "path": path,
-                    "line": item["line"],
+                    "line": line,
                     "title": ascii_clean(item.get("title", "")).strip(),
                     "body": ascii_clean(item.get("body", "")).strip(),
                 })
@@ -440,15 +507,22 @@ def review_files(model, chunks, pr_context, no_model, think=False, budget=0):
                   f"{time.time() - started:.0f}s{thought}")
 
     order = {"blocker": 0, "notable": 1, "nit": 2}
-    findings.sort(key=lambda f: (order.get(f["severity"], 3), f["path"], f["line"]))
+    findings.sort(key=lambda f: (order.get(f["severity"], 3), f["path"], f["line"] or 0))
     return findings, cleared, dropped
+
+
+def where(finding):
+    """path:line, or the path marked deleted for a finding with no anchor."""
+    if finding["line"] is None:
+        return f"{finding['path']} (deleted file)"
+    return f"{finding['path']}:{finding['line']}"
 
 
 def build_summary(model, pr_context, findings, no_model):
     if no_model:
         return "Local pipeline check, no model pass was run."
     digest = "\n".join(
-        f"- {f['severity']}: {f['path']}:{f['line']} {f['title']}" for f in findings
+        f"- {f['severity']}: {where(f)} {f['title']}" for f in findings
     ) or "(no findings)"
     result = ollama_chat(
         model, SUMMARY_BRIEF, f"{pr_context}\n\nFindings:\n{digest}",
@@ -513,6 +587,41 @@ def selftest():
     # right-side number. Getting this wrong shifts every later anchor.
     assert out["q.sql"]["lines"] == {10, 11, 12}, out["q.sql"]["lines"]
     assert "    11| +++x = 1;" in out["q.sql"]["text"], out["q.sql"]["text"]
+    # A deleted file is kept as context: no anchorable lines, flagged deleted.
+    # The overview names every file's status, skipped ones included.
+    removal = (
+        "diff --git a/old.ts b/old.ts\n"
+        "deleted file mode 100644\n"
+        "index 111..000\n"
+        "--- a/old.ts\n"
+        "+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n"
+        "-export const x = 1\n"
+        "-export const y = 2\n"
+        "diff --git a/a.test.ts b/b.test.ts\n"
+        "similarity index 90%\n"
+        "rename from a.test.ts\n"
+        "rename to b.test.ts\n"
+        "diff --git a/new.ts b/new.ts\n"
+        "new file mode 100644\n"
+        "@@ -0,0 +1 @@\n"
+        "+new file mode 100644\n"   # an added line that looks like a header
+        "diff --git a/src/generated/g.ts b/src/generated/g.ts\n"
+        "@@ -1 +1 @@\n"
+        "-a\n"
+        "+b\n"
+    ) + diff
+    out = split_diff(removal)
+    assert out["old.ts"]["deleted"] and out["old.ts"]["lines"] == set(), out["old.ts"]
+    assert "-export const y = 2" in out["old.ts"]["text"], out["old.ts"]["text"]
+    assert not out["new.ts"]["deleted"] and out["new.ts"]["lines"] == {1}
+    assert "src/generated/g.ts" not in out and "img.png" not in out, sorted(out)
+    overview = diff_overview(removal)
+    for expected in ("- deleted: old.ts", "- renamed from a.test.ts: b.test.ts",
+                     "- added: new.ts",
+                     "- modified: src/generated/g.ts (generated or lock file, not reviewed)",
+                     "- modified: img.png (binary, not reviewed)", "- modified: q.sql"):
+        assert expected in overview, (expected, overview)
     assert ascii_clean("a—b → c “d”") == 'a - b -> c "d"'
     assert ascii_clean("a Footgun here") == "a sharp edge here"
     # Splits on line boundaries only, so an oversized file yields >1 piece and
@@ -535,6 +644,18 @@ def selftest():
     full = build_payload(state, "COMMENT")
     assert full["comments"] == [{"path": "q.sql", "line": 11, "side": "RIGHT", "body": "b"}]
     assert "no verdict" in full["slack_summary"], full["slack_summary"]
+    # A deleted file's finding (line None) goes in the body, never inline,
+    # and survives APPROVE_BARE; a note lands last, verbatim.
+    mixed = dict(state, findings=state["findings"] + [
+        {"severity": "notable", "path": "old.ts", "line": None,
+         "title": "Lost check", "body": "Nothing replaces it."}])
+    payload = build_payload(mixed, "APPROVE", note="  Ship it — after the deploy.  ")
+    assert payload["comments"] == full["comments"], payload["comments"]
+    assert payload["body"] == ("Fine.\n\nOn deleted files:\n- `old.ts`: Lost check. "
+                               "Nothing replaces it.\n\nShip it — after the deploy."), payload["body"]
+    bare = build_payload(mixed, "APPROVE_BARE")
+    assert bare["comments"] == [] and "Lost check" in bare["body"], bare
+    assert build_payload(state, "COMMENT")["body"] == "Fine.", "no note, body unchanged"
     try:
         build_payload(state, "none")
         raise AssertionError("an unknown choice must not build a payload")
@@ -577,12 +698,16 @@ def main():
     parser.add_argument("--think-budget", type=int, default=0, metavar="N",
                         help="cap the reasoning at N tokens per call; implies --think")
     parser.add_argument("--post-saved", choices=SAVED_CHOICES, metavar="CHOICE")
+    parser.add_argument("--note", default="", metavar="TEXT",
+                        help="your own words, appended to the end of the review body")
     args = parser.parse_args()
+    if args.note and args.post_saved == "DISCARD":
+        parser.error("--note has nothing to attach to: DISCARD posts nothing")
     if args.think_budget < 0:
         parser.error("--think-budget must be positive")
     args.think = args.think or args.think_budget > 0
     if args.post_saved:
-        return post_saved(args.pr, args.post_saved)
+        return post_saved(args.pr, args.post_saved, args.note)
 
     number_match = re.search(r"(\d+)\s*$", args.pr)
     if not number_match:
@@ -608,7 +733,8 @@ def main():
 
         pr_context = (
             f"Pull request: {view.get('title', '')}\n"
-            f"Description:\n{(view.get('body') or '(none)')[:4000]}"
+            f"Description:\n{(view.get('body') or '(none)')[:4000]}\n\n"
+            f"{diff_overview(diff_text)}"
         )
 
         chunks = split_diff(diff_text)
@@ -633,7 +759,7 @@ def main():
         print(f"model: {args.model}{think_label(args)}   head: {info['sha'][:12]}   mode: {info['mode']}")
         print("=" * 72)
         for finding in findings:
-            print(f"\n[{finding['severity']}] {finding['path']}:{finding['line']}")
+            print(f"\n[{finding['severity']}] {where(finding)}")
             print(f"  {finding['title']}")
             for line in finding["body"].splitlines():
                 print(f"    {line}")
@@ -679,7 +805,7 @@ def main():
         choice = gate(verdict, len(findings), info["mode"])
         if choice == "none":
             return
-        code = post_payload(state, choice, number)
+        code = post_payload(state, choice, number, args.note)
         if code != 0:
             sys.exit(f"post-review.sh failed ({code})")
         posted = True
@@ -734,7 +860,7 @@ def saved_path(number):
     return f"/tmp/pr-{number}-review.json"
 
 
-def build_payload(state, choice):
+def build_payload(state, choice, note=""):
     """The reviews-endpoint payload for one choice, plus post-review.sh's
     slack_summary. Only these keys: the saved state carries more, and anything
     extra would be sent to GitHub."""
@@ -743,8 +869,18 @@ def build_payload(state, choice):
     event = "APPROVE" if choice == "APPROVE_BARE" else choice
     comments = [] if choice == "APPROVE_BARE" else [
         {"path": f["path"], "line": f["line"], "side": "RIGHT", "body": f["body"]}
-        for f in state["findings"]
+        for f in state["findings"] if f["line"] is not None
     ]
+    # Findings on deleted files have no line to hang on, so they go in the
+    # body, which APPROVE_BARE keeps: it drops inline comments, not the body.
+    body = state["summary"]
+    general = [f for f in state["findings"] if f["line"] is None]
+    if general:
+        body += "\n\nOn deleted files:\n" + "\n".join(
+            f"- `{f['path']}`: {f['title']}. {f['body']}" for f in general)
+    if note.strip():
+        # The human's own words: verbatim, not ascii_clean'd.
+        body += "\n\n" + note.strip()
     noun = "comment" if len(comments) == 1 else "comments"
     slack = {
         "APPROVE": f"Reviewed it, looks good, approved with {len(comments)} {noun}.",
@@ -756,23 +892,23 @@ def build_payload(state, choice):
     return {
         "commit_id": state["commit_id"],
         "event": event,
-        "body": state["summary"],
+        "body": body,
         "comments": comments,
         "slack_summary": ascii_clean(slack),
     }
 
 
-def post_payload(state, choice, number):
+def post_payload(state, choice, number, note=""):
     """Write the payload and hand it to post-review.sh, which checks the head
     sha, posts, signals chat and removes the worktree."""
     payload_path = f"/tmp/pr-{number}-post.json"
     with open(payload_path, "w") as handle:
-        json.dump(build_payload(state, choice), handle, indent=2)
+        json.dump(build_payload(state, choice, note), handle, indent=2)
     return run([POST, state["pr"], payload_path, state["repo"]],
                check=False, capture=False).returncode
 
 
-def post_saved(pr, choice):
+def post_saved(pr, choice, note=""):
     """The second half of --save-only: no model, just the saved findings."""
     number_match = re.search(r"(\d+)\s*$", pr)
     if not number_match:
@@ -788,7 +924,7 @@ def post_saved(pr, choice):
         sys.exit(f"no saved review at {saved_path(number)}: run with --save-only first")
     if state.get("mode") == "self-review":
         sys.exit("this was a self-review: prr never posts those.")
-    code = post_payload(state, choice, number)
+    code = post_payload(state, choice, number, note)
     if code == 0:
         # post-review.sh's cleanup usually removed it already (it clears every
         # /tmp/pr-<N>-* artifact); this catches a run where it didn't.

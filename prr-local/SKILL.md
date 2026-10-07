@@ -26,7 +26,9 @@ not load prr, whose procedure is far too long for a local context window.
 The review runs as a deterministic pipeline, not as a procedure you follow: it
 splits the diff per file, asks the local model about one file at a time under a
 JSON schema, validates every line anchor against the diff, and derives the
-verdict from the findings.
+verdict from the findings. Every call also gets a one-line-per-file overview of
+the whole PR. Deleted files are reviewed as context: their findings have no line,
+so they go in the review body under "On deleted files" instead of inline.
 
 **Do not review the diff yourself.** Reading a whole PR through a local model
 costs more than the pipeline does and produces worse anchors. Run the script.
@@ -71,7 +73,11 @@ python3 ~/.claude/skills/prr/scripts/prr-local.py <PR> --post-saved APPROVE
 
 Valid choices: `APPROVE`, `APPROVE_BARE` (approve with no inline comments),
 `REQUEST_CHANGES`, `COMMENT`, and `DISCARD` (post nothing). When you ask the
-user to choose, always list `DISCARD` too. This runs no inference; it posts the saved
+user to choose, always list `DISCARD` too.
+
+To add the user's own words to the end of the review body, append
+`--note "<their text>"` to any choice except `DISCARD`. Pass the text exactly as
+they wrote it; never write or reword a note yourself. This runs no inference; it posts the saved
 review and cleans up. If commits landed since the review, it refuses rather
 than posting a stale review, which is correct: re-run the review.
 

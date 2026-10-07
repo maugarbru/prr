@@ -634,7 +634,7 @@ check, re-review detection and cleanup behave as in prr.
 python3 scripts/prr-local.py <PR> [--model TAG] [--silent]         # interactive gate
 python3 scripts/prr-local.py <PR> --think-budget 1000 --save-only  # reason first, capped per file
 python3 scripts/prr-local.py <PR> --save-only                      # report, save, stop
-python3 scripts/prr-local.py <PR> --post-saved APPROVE|APPROVE_BARE|REQUEST_CHANGES|COMMENT|DISCARD  # DISCARD posts nothing
+python3 scripts/prr-local.py <PR> --post-saved APPROVE|APPROVE_BARE|REQUEST_CHANGES|COMMENT|DISCARD [--note TEXT]  # DISCARD posts nothing; --note appends your words
 python3 scripts/prr-local.py <PR> --no-model --silent --save-only  # plumbing check, no model
 python3 scripts/prr-local.py --selftest
 ```

@@ -164,7 +164,8 @@ Write the summary body for a pull request review, given the findings below.
 
 - Two short paragraphs at most. Plain ASCII, no em-dashes, no bullet lists.
 - Say what the change does and whether it is sound.
-- Do not re-list the findings; they are posted as inline comments already.
+- Do not re-list the findings. Inline ones are posted as comments, and ones
+  marked "(deleted file)" are printed in full right after your summary.
 - If there are no findings, say what you checked and that it looks right.
 - Write like a colleague, not a report generator. No praise padding.
 """
@@ -653,8 +654,14 @@ def selftest():
     assert payload["comments"] == full["comments"], payload["comments"]
     assert payload["body"] == ("Fine.\n\nOn deleted files:\n- `old.ts`: Lost check. "
                                "Nothing replaces it.\n\nShip it — after the deploy."), payload["body"]
+    assert payload["slack_summary"].endswith("approved with 2 comments."), payload
+    assert choice_line(mixed, "APPROVE", payload, "x") == (
+        "choice: APPROVE  (1 inline comment, 1 deleted-file note in the body, "
+        "your note at the end)"), choice_line(mixed, "APPROVE", payload, "x")
     bare = build_payload(mixed, "APPROVE_BARE")
     assert bare["comments"] == [] and "Lost check" in bare["body"], bare
+    # The body still carries the deleted-file finding, so chat must not say "looks good".
+    assert bare["slack_summary"].endswith("approved with 1 comment."), bare["slack_summary"]
     assert build_payload(state, "COMMENT")["body"] == "Fine.", "no note, body unchanged"
     try:
         build_payload(state, "none")
@@ -903,13 +910,16 @@ def build_payload(state, choice, note=""):
     if note.strip():
         # The human's own words: verbatim, not ascii_clean'd.
         body += "\n\n" + note.strip()
-    noun = "comment" if len(comments) == 1 else "comments"
+    # Deleted-file findings count as comments for chat: they are in the body,
+    # and "looks good" with no hint of them would undersell the review.
+    count = len(comments) + len([f for f in state["findings"] if f["line"] is None])
+    noun = "comment" if count == 1 else "comments"
     slack = {
-        "APPROVE": f"Reviewed it, looks good, approved with {len(comments)} {noun}.",
-        "REQUEST_CHANGES": f"Took a look, left {len(comments)} {noun} to sort out.",
-        "COMMENT": f"Read through it, left {len(comments)} {noun}, no verdict yet.",
+        "APPROVE": f"Reviewed it, looks good, approved with {count} {noun}.",
+        "REQUEST_CHANGES": f"Took a look, left {count} {noun} to sort out.",
+        "COMMENT": f"Read through it, left {count} {noun}, no verdict yet.",
     }[event]
-    if event == "APPROVE" and not comments:
+    if event == "APPROVE" and not count:
         slack = "Reviewed it, looks good to me, approved."
     return {
         "commit_id": state["commit_id"],
@@ -920,12 +930,27 @@ def build_payload(state, choice, note=""):
     }
 
 
+def choice_line(state, choice, payload, note):
+    """Name the choice outright, with everything the review carries. A harness
+    model relaying "inline comments=0" alone called a plain APPROVE "bare"."""
+    notes = len([f for f in state["findings"] if f["line"] is None])
+    parts = [f"{len(payload['comments'])} inline comment"
+             f"{'' if len(payload['comments']) == 1 else 's'}"]
+    if notes:
+        parts.append(f"{notes} deleted-file note{'' if notes == 1 else 's'} in the body")
+    if note.strip():
+        parts.append("your note at the end")
+    return f"choice: {choice}  ({', '.join(parts)})"
+
+
 def post_payload(state, choice, number, note=""):
     """Write the payload and hand it to post-review.sh, which checks the head
     sha, posts, signals chat and removes the worktree."""
     payload_path = f"/tmp/pr-{number}-post.json"
+    payload = build_payload(state, choice, note)
+    print(choice_line(state, choice, payload, note))
     with open(payload_path, "w") as handle:
-        json.dump(build_payload(state, choice, note), handle, indent=2)
+        json.dump(payload, handle, indent=2)
     return run([POST, state["pr"], payload_path, state["repo"]],
                check=False, capture=False).returncode
 

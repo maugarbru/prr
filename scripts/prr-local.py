@@ -74,7 +74,7 @@ DEFAULT_MODEL = os.environ.get("PRR_LOCAL_MODEL", "gemma4-26b-a4b-32k:latest")
 
 # One context size for every call. Ollama reloads a model whenever num_ctx
 # changes, which on the 26B is ~15 s per file. 32768 matches the Modelfile pin
-# of the default tag, so the runner prime-agent loaded is reused as-is.
+# of the default tag, so the runner the harness (pi) loaded is reused as-is.
 NUM_CTX = int(os.environ.get("PRR_LOCAL_NUM_CTX", "32768"))
 
 POST_CHOICES = ("APPROVE", "APPROVE_BARE", "REQUEST_CHANGES", "COMMENT")
@@ -714,6 +714,11 @@ def main():
         sys.exit("could not read a PR number from that argument")
     number = number_match.group(1)
     start_log(number)
+    if args.think and not args.no_model and supports_thinking(args.model) is False:
+        # The skill asks for a budget by default; a model that can't think
+        # reviews without it rather than failing on the first file.
+        print(f"note: {args.model} does not support thinking; reviewing without it.")
+        args.think, args.think_budget = False, 0
 
     setup_cmd = [SETUP] + (["--silent"] if args.silent else []) + [args.pr]
     setup = run(setup_cmd, check=False)
@@ -814,6 +819,23 @@ def main():
         # remove the worktree. post-review.sh with no payload does that.
         if not posted:
             run([POST, args.pr], check=False, capture=False)
+
+
+def supports_thinking(model):
+    """Whether Ollama lists `thinking` among the model's capabilities. Ollama
+    rejects think:true for a model without it, which would end the run on the
+    first file. None when it can't tell (older Ollama, model not pulled)."""
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/show",
+        data=json.dumps({"model": model}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            caps = json.load(resp).get("capabilities")
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return None if caps is None else "thinking" in caps
 
 
 def think_label(args):

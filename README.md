@@ -654,43 +654,35 @@ Before trusting any result, read the `reviewing N file(s)` line. A PR you
 already reviewed, with no commits since, reviews zero files and still proposes
 APPROVE.
 
-### Running it from an agent harness (prime-agent)
+### Running it from an agent harness (pi)
 
 The harness's model only launches the script; the script does the review. The
-setup below is for [prime-agent](https://github.com/PrimeIntellect-ai/prime-agent)
-talking to Ollama, but each piece has an equivalent in other harnesses.
+setup below is for [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+talking to Ollama, but each piece has an equivalent in other harnesses. pi
+suits a local model: its own system prompt is ~1.4k tokens, against ~13k for
+prime-agent (the harness this was first wired into, replaced by pi on 2026-10-07), and
+every prompt token is read at a few hundred tokens/s on an iGPU.
 
-**1. The `/prr-local` prompt.** `prr-local/prime-agent-prompt.md` hands the model
-the exact Python to run, because a small model told to "use skill X" invents a
-function named X. It also splits the arguments so flags reach the script, and
-forbids posting. Link it rather than copying it, so it stays current:
+**1. Make the skill visible.** pi discovers skills in `~/.agents/skills`. Link
+this skill there, never prr's own `SKILL.md` (far too long for a local context
+window, and written for Claude Code):
 
 ```
-ln -s ~/.claude/skills/prr/prr-local/prime-agent-prompt.md ~/.prime/agent/prompts/prr-local.md
+mkdir -p ~/.agents/skills
+ln -s ~/.claude/skills/prr/prr-local ~/.agents/skills/prr-local
 ```
 
-Then `/prr-local <PR> --think-budget 1000 --silent` in prime-agent runs a
-review with `--save-only`, and `/prr-local --selftest` checks the wiring.
+Then `/prr-local <PR-url>` in pi runs a review. Put the PR in the same message:
+a bare `/prr-local` leaves a small model reading the skill and waiting. The
+skill's command adds `--save-only --think-budget 400`; ask for another budget,
+or none, in the same message. pi also loads the `AGENTS.md` of the directory it
+starts in, so start it outside a big repo to keep the prompt small.
 
-**2. `~/.prime/agent/settings.json`.** Load only this skill, never prr's own
-`SKILL.md` (far too long for a local context window, and written for Claude
-Code). Also turn thinking off by default: prime-agent's built-in default is
-`medium`, and Gemma 4 then reasons, uncapped, before every tool call.
-
-```json
-"skills": ["/home/<you>/.claude/skills/prr/prr-local"],
-"defaultProvider": "ollama",
-"defaultModel": "gemma4-26b-a4b-32k:latest",
-"defaultThinkingLevel": "off"
-```
-
-Use an absolute path in `skills`. prime-agent requires a skill's directory
-name to match its `name:`, which is why the directory is `prr-local`.
-
-**3. Pin the context size.** prime-agent reaches Ollama through its
-OpenAI-compatible `/v1` endpoint, which sends no `num_ctx`, so a model serves
-whatever size Ollama has already loaded for it, and a prompt that doesn't fit
-is silently cut short. Pin it with a Modelfile tag:
+**2. Pin the context size.** pi reaches Ollama through its OpenAI-compatible
+`/v1` endpoint, which sends no `num_ctx`, so a model serves whatever size Ollama
+has already loaded for it, and a prompt that doesn't fit is silently cut short.
+Pin it with a Modelfile tag (keep the Modelfile somewhere permanent, to rebuild
+the tag):
 
 ```
 printf 'FROM gemma4:26b-a4b-it-qat\nPARAMETER num_ctx 32768\n' > Modelfile.gemma4-32k
@@ -699,32 +691,35 @@ ollama create gemma4-26b-a4b-32k -f Modelfile.gemma4-32k
 
 Keep the model entry's `contextWindow` equal to the pin. prr-local.py itself
 calls `/api/chat` with `num_ctx` 32768 (`$PRR_LOCAL_NUM_CTX`) on every call to
-match, so it reuses the runner prime-agent loaded rather than reloading it.
+match, so it reuses the runner pi loaded rather than reloading it.
 
-**4. The model entry in `~/.prime/agent/models.json`.** Gemma 4 thinks by
-default even on `/v1`, where Ollama honours only `reasoning_effort: "none"` to
-stop it (`think: false` is ignored). prime-agent sends that only when the entry
-says the model reasons and accepts an effort level:
+**3. The model entry in `~/.pi/agent/models.json`.** Gemma 4 thinks by default
+even on `/v1`, where Ollama honours only `reasoning_effort: "none"` to stop it
+(`think: false` is ignored). pi sends that for its "off" level only when the
+entry says the model reasons, accepts an effort level, and maps off to none:
 
 ```json
-{
-  "id": "gemma4-26b-a4b-32k:latest",
-  "reasoning": true,
-  "contextWindow": 32768,
-  "maxTokens": 8192,
-  "compat": {
-    "maxTokensField": "max_tokens",
-    "supportsDeveloperRole": false,
-    "supportsReasoningEffort": true,
-    "supportsStore": false,
-    "supportsStrictMode": false
-  }
-}
+{"providers": {"ollama": {
+  "baseUrl": "http://127.0.0.1:11434/v1",
+  "api": "openai-completions",
+  "apiKey": "ollama",
+  "models": [{
+    "id": "gemma4-26b-a4b-32k:latest",
+    "contextWindow": 32768,
+    "maxTokens": 4096,
+    "reasoning": true,
+    "compat": {"supportsReasoningEffort": true},
+    "thinkingLevelMap": {"off": "none"}
+  }]
+}}}
 ```
 
-The entry sits under an `ollama` provider with `"baseUrl":
-"http://localhost:11434/v1"`, `"api": "openai-completions"` and any non-empty
-`apiKey`; without a key the provider's models do not appear.
+Any non-empty `apiKey` works. pi lists only the models in this file, not
+everything Ollama has pulled. The harness model needs no thinking to drive the
+skill (the review's own thinking is the script's `--think-budget`), so set
+`"defaultThinkingLevel": "off"` in `~/.pi/agent/settings.json`, next to
+`"defaultProvider": "ollama"` and `"defaultModel"`. Shift+Tab changes the level
+in a session.
 
 ## Requirements
 
@@ -794,8 +789,7 @@ prr/
     ├── prr-local.py      # experimental: single-source review by a local Ollama model
     └── slack_react.py    # optional: react on the PR's chat post (opt-in via env)
 prr-local/
-├── SKILL.md              # the prr-local skill, for agent harnesses on a local model
-└── prime-agent-prompt.md # the /prr-local prompt for prime-agent (symlink it into ~/.prime)
+└── SKILL.md              # the prr-local skill, for agent harnesses on a local model (link it into ~/.agents/skills)
 ```
 
 ## Good to know

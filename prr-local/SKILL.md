@@ -20,7 +20,7 @@ description: Review a GitHub pull request with the local Ollama model, as a sing
 A single-source review of a pull request by a local model, sharing prr's setup
 and posting scripts. It lives inside the prr skill directory on purpose: Claude
 Code only discovers top-level skills, so it sees prr and not this; an agent
-harness running a local model (prime-agent) lists this path explicitly and does
+harness running a local model (pi, via a ~/.agents/skills link) sees it and does
 not load prr, whose procedure is far too long for a local context window.
 
 The review runs as a deterministic pipeline, not as a procedure you follow: it
@@ -36,12 +36,15 @@ costs more than the pipeline does and produces worse anchors. Run the script.
 ## Review
 
 ```
-python3 ~/.claude/skills/prr/scripts/prr-local.py <PR-url-or-number> --save-only
+python3 ~/.claude/skills/prr/scripts/prr-local.py <PR-url-or-number> --save-only --think-budget 400
 ```
 
-Add `--silent` to suppress chat signals, and `--think-budget N` to let the
-model reason for up to N tokens per file first (never plain `--think`: it is
-uncapped and can run for many minutes on one file). Progress goes to
+`--think-budget 400` is the default here: the model reasons for up to 400 tokens
+per file before its findings (up to ~17 s more per file). If the user names a
+different budget, use theirs; leave the flag out only if they ask for no
+thinking. A model without thinking support (Ollama's capabilities, e.g.
+`qwen3-coder`) skips it on its own, with a note. Never use plain `--think`: it is uncapped and can run for many
+minutes on one file. Add `--silent` to suppress chat signals. Progress goes to
 `/tmp/prr-local-<N>.log`. The default model is
 `gemma4-26b-a4b-32k:latest` (override with `--model` or `$PRR_LOCAL_MODEL`).
 It makes one call per changed file, so time scales with the file count: expect

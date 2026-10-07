@@ -75,14 +75,22 @@ python3 ~/.claude/skills/prr/scripts/prr-local.py <PR> --post-saved APPROVE
 ```
 
 Valid choices: `APPROVE`, `APPROVE_BARE` (approve with no inline comments),
-`REQUEST_CHANGES`, `COMMENT`, and `DISCARD` (post nothing). When you ask the
-user to choose, always list `DISCARD` too.
+`REQUEST_CHANGES`, `COMMENT`, and `DISCARD` (post nothing). This runs no
+inference; it posts the saved review and cleans up. If commits landed since the
+review, it refuses rather than posting a stale review, which is correct: re-run
+the review.
 
-To add the user's own words to the end of the review body, append
-`--note "<their text>"` to any choice except `DISCARD`. Pass the text exactly as
-they wrote it; never write or reword a note yourself. This runs no inference; it posts the saved
-review and cleans up. If commits landed since the review, it refuses rather
-than posting a stale review, which is correct: re-run the review.
+When you ask the user to choose, list all five, and tell them they can add a
+note of their own to any choice except `DISCARD`. If they give one, pass it
+through a quoted heredoc, so backticks and `$` in it reach GitHub unchanged:
+
+```
+python3 ~/.claude/skills/prr/scripts/prr-local.py <PR> --post-saved APPROVE --note - <<'NOTE'
+<their text, exactly as they wrote it>
+NOTE
+```
+
+Never write or reword a note yourself. It goes at the end of the review body.
 
 If the user declines, discard: `--post-saved DISCARD` posts nothing, clears the
 chat :eyes: marker, and removes the worktree and the saved review.

@@ -50,6 +50,7 @@ Usage:
                 the worktree and saved review (post-review.sh cleanup only).
   --note TEXT   Your own words, appended verbatim to the end of the review body
                 (any choice except DISCARD). Also applies at the interactive gate.
+                `--note -` reads the text from stdin (use a quoted heredoc).
 
 Every review run also logs to /tmp/prr-local-<N>.log as it goes (tail -f it
 from another terminal); cleanup leaves the log in place.
@@ -708,6 +709,10 @@ def main():
     parser.add_argument("--note", default="", metavar="TEXT",
                         help="your own words, appended to the end of the review body")
     args = parser.parse_args()
+    if args.note == "-":
+        # Read from stdin, so a harness can pass the text through a quoted
+        # heredoc: backticks and $ inside "..." would be run by the shell.
+        args.note = sys.stdin.read()
     if args.note and args.post_saved == "DISCARD":
         parser.error("--note has nothing to attach to: DISCARD posts nothing")
     if args.think_budget < 0:
@@ -812,6 +817,8 @@ def main():
             print(f"  decide:  prr-local.py {args.pr} --post-saved <CHOICE>  "
                   f"({', '.join(SAVED_CHOICES)})")
             print("  DISCARD posts nothing and cleans up.")
+            print("  add a note of your own to any other choice: it goes at the "
+                  "end of the review body (--note TEXT, or --note - from stdin).")
             return
 
         choice = gate(verdict, len(findings), info["mode"])

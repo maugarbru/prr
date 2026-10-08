@@ -277,7 +277,8 @@ Then:
     available. If no Atlassian MCP is configured, the tool is missing,
     or the call fails for auth reasons, silently skip the fetch and
     proceed without ticket context. Note the skip once in your console
-    output so the user knows the ticket was not read. Do **not** mention
+    output so the user knows the ticket was not read, and record
+    `ac: "unread"` in step 6. Do **not** mention
     the skip in any drafted review body or inline comment — that detail
     belongs to the local workflow, not to the PR.
   - If no ticket/issue is linked, skip this bullet without comment.
@@ -366,9 +367,14 @@ time; the two passes must overlap.
     Evidence decides the status, not the PR description: "done" or
     "partly" without a `file:line` is "unclear". Criteria that are not
     code (a demo, a doc page, a deploy step) are done or missing like any
-    other, from what the PR contains. With no ticket, or a ticket that has
-    no acceptance criteria, there is nothing to check; record `ac: "none"`
-    in step 6 and say so once at the gate.
+    other, from what the PR contains. When there is nothing to check,
+    record which of three reasons it was, in step 6's `ac`, and say it once
+    at the gate:
+    - `"no-ticket"` - the PR links no ticket or issue.
+    - `"no-criteria"` - the ticket was read and has no acceptance criteria.
+    - `"unread"` - a ticket is linked but could not be fetched (no Atlassian
+      MCP, an auth failure, an error). Not the same as no criteria: nobody
+      knows what the criteria were.
 
 Collect Source B's result once it completes.
 
@@ -783,8 +789,9 @@ containing:
   it). It is stripped from the posted body and recorded in the hidden
   `prr-meta` marker, so report it honestly.
 - `ac` — the acceptance-criteria counts from step 2, as
-  `{"done": N, "partly": N, "missing": N, "unclear": N}`, or the string
-  `"none"` when there was no ticket or no criteria to check. Counts only,
+  `{"done": N, "partly": N, "missing": N, "unclear": N}`, or one of the
+  strings `"no-ticket"`, `"no-criteria"` or `"unread"` when there was
+  nothing to check (step 2 says which is which). Counts only,
   never the criteria text: like `source_b`, it is stripped from the posted
   body and recorded in `prr-meta`. Include it on every review that posts,
   so "not checked" never looks like "nothing to check".

@@ -808,8 +808,9 @@ prr-local/
   pass (`a_s`, `b_s`, `total_s`; `total_s`
   includes time at the approval gate), and two checks as counts:
   - `ac=6 ac_done=4 ac_partly=1 ac_missing=0 ac_unclear=1`: the linked
-    ticket's acceptance criteria, each checked against the diff (`ac=none`
-    when there was nothing to check).
+    ticket's acceptance criteria, each checked against the diff. With nothing
+    to check it says why: `ac=no-ticket`, `ac=no-criteria` (the ticket has
+    none) or `ac=unread` (a ticket is linked but could not be fetched).
   - `prior_fixed=3 prior_partly=1 prior_open=1 prior_moot=0 prior_unclear=1`
     (re-reviews only): what became of each finding from the last review.
 

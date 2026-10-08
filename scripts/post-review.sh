@@ -261,15 +261,16 @@ t0="$(stamp started)"
 fanout=0; [[ -n "${PRR_FANOUT_PANE:-}" ]] && fanout=1
 # The payload's optional `prior` (re-review: status of each earlier finding)
 # and `ac` (ticket acceptance criteria) become counts, never text: the line
-# is hidden only from rendering. ac="none" means there was nothing to check,
-# which is not the same as checking and finding everything done. A missing
+# is hidden only from rendering. ac is no-ticket, no-criteria or unread when
+# there was nothing to check, and those three are kept apart: a ticket that
+# could not be fetched is not one without criteria. A missing
 # or malformed field records nothing rather than a guess.
 checks="$(jq -r '
   def n(k): (.[k] // 0) | (tonumber? // 0) | floor | if . < 0 then 0 else . end;
   [ (.prior | if type == "object" then
         "prior_fixed=\(n("fixed")) prior_partly=\(n("partly")) prior_open=\(n("open")) prior_moot=\(n("moot")) prior_unclear=\(n("unclear"))"
       else empty end),
-    (.ac | if . == "none" then "ac=none"
+    (.ac | if . == "no-ticket" or . == "no-criteria" or . == "unread" then "ac=\(.)"
       elif type == "object" then
         "ac=\(n("done") + n("partly") + n("missing") + n("unclear")) ac_done=\(n("done")) ac_partly=\(n("partly")) ac_missing=\(n("missing")) ac_unclear=\(n("unclear"))"
       else empty end)

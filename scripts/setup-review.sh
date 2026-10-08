@@ -77,6 +77,14 @@ silent_marker="/tmp/pr-${number}-silent"
 # PR cannot make an ordinary review of that same PR quietly stealthy later.
 rm -f "$prior_json" "$since_diff" "$silent_marker"
 
+# Start of the review, for the timings post-review.sh writes into its hidden
+# meta marker. Kept across a re-run on a moved head (same review), but a stamp
+# over a day old is a crashed run's leftover, not this review.
+started="/tmp/pr-${number}-started"
+if [[ -z "$(find "$started" -mmin -1440 2>/dev/null)" ]]; then
+  date +%s > "$started"
+fi
+
 # Idempotent: drop whatever a previous run left at $wt. If it was a worktree
 # of the repo we are currently in, deregister it first; then clear the path.
 # (A worktree registered in a different repo can only be pruned from inside
@@ -197,6 +205,8 @@ if [[ -n "$prior" ]]; then
     fi
   fi
 fi
+
+printf '%s\n' "$mode" > "/tmp/pr-${number}-mode"
 
 # --- Summary -------------------------------------------------------------
 cat <<EOF

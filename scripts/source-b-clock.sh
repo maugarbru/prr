@@ -18,6 +18,12 @@
 # Usage:
 #   source-b-clock.sh start <pr-number>    # stamp the spawn time
 #   source-b-clock.sh check <pr-number>    # report the verdict
+#   source-b-clock.sh a-done <pr-number>   # your own pass (Source A) finished
+#   source-b-clock.sh b-done <pr-number>   # Source B's report arrived
+#
+# a-done / b-done only record a time (first call wins) for the per-pass timings
+# post-review.sh writes into the review's hidden prr-meta marker. They live here
+# rather than in a script of their own so they need no extra allow-list entry.
 #
 # `check` prints one line of KEY=VALUE pairs on stdout, always exit 0 so a
 # caller under `set -e` is never killed by a verdict:
@@ -47,7 +53,7 @@ TAG="source-b-clock"
 DEFAULT_BUDGET=600
 
 usage() {
-  echo "$TAG: usage: $(basename "$0") start|check <pr-number>" >&2
+  echo "$TAG: usage: $(basename "$0") start|check|a-done|b-done <pr-number>" >&2
   exit 2
 }
 
@@ -56,7 +62,7 @@ number="${2:-}"
 
 [[ -n "$mode" && -n "$number" ]] || usage
 case "$mode" in
-  start | check) ;;
+  start | check | a-done | b-done) ;;
   *) usage ;;
 esac
 # Digits only: the number lands in a /tmp path, so reject anything that could
@@ -77,6 +83,13 @@ if ! [[ "$budget" =~ ^[0-9]+$ ]]; then
 fi
 
 now="$(date +%s)"
+
+if [[ "$mode" == "a-done" || "$mode" == "b-done" ]]; then
+  done_stamp="/tmp/pr-${number}-${mode}"
+  [[ -s "$done_stamp" ]] || printf '%s\n' "$now" >"$done_stamp"
+  echo "$TAG: ${mode} recorded for PR #${number}"
+  exit 0
+fi
 
 if [[ "$mode" == "start" ]]; then
   printf '%s\n' "$now" >"$stamp"

@@ -358,6 +358,19 @@ time; the two passes must overlap.
 
 Collect Source B's result once it completes.
 
+**Stamp each pass as it ends**, so the posted review's hidden `prr-meta`
+marker can record how long each took. Run the first when your own pass is
+done, the second the moment Source B's report arrives (not when it stubs or
+dies):
+
+```
+~/.claude/skills/prr/scripts/source-b-clock.sh a-done <PR-number>
+~/.claude/skills/prr/scripts/source-b-clock.sh b-done <PR-number>
+```
+
+Each is one bare statement; run them separately. A missed stamp only leaves
+`-` in the marker.
+
 ### Skip Source B for plain-prose docs changes
 
 Decide this from the changed-file list in step 1, before spawning anything.
@@ -743,6 +756,10 @@ containing:
   comment (needed when a `suggestion` block replaces more than one line,
   see step 4), also set `start_line` and `start_side` so the range is
   `start_line`..`line`; the suggestion replaces exactly that range.
+- `source_b` — optional; what happened to Source B: `returned`,
+  `skipped-prose`, `failed`, `stubbed` or `timeout` (a re-review may omit
+  it). It is stripped from the posted body and recorded in the hidden
+  `prr-meta` marker, so report it honestly.
 - `slack_summary` — **required whenever the review posts** (i.e. every run
   except a self-review, which posts nothing). A single short, plain,
   informal sentence summarizing the action you took, used as the threaded
@@ -898,6 +915,9 @@ since-diff and the current file in the worktree (`/tmp/pr-<N>-wt`). Use
 Cite the commit or `file:line` that resolves (or fails to resolve) each
 one. Then skim the since-diff once for any obvious regression the fixes
 introduced. This is a light pass, not a new dual-source review.
+
+When it is done, stamp it as step 2 describes:
+`~/.claude/skills/prr/scripts/source-b-clock.sh a-done <PR-number>`.
 
 ## R3. Re-review gate — STOP HERE
 

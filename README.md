@@ -801,6 +801,18 @@ prr-local/
   or drop any comment before posting.
 - Reviews post under **your** GitHub identity; `prr` is a personal reviewer's
   aid, not a bot account.
+- Each posted review ends with two hidden HTML comments. `<!-- prr -->` is how
+  re-review mode finds your earlier review. `<!-- prr-meta ... -->` records the
+  mode, what happened to the security pass (`source_b=returned`, `timeout`,
+  `failed`...) and seconds per pass (`a_s`, `b_s`, `total_s`; `total_s`
+  includes time at the approval gate), for later metrics:
+
+  ```bash
+  gh api --paginate repos/OWNER/REPO/pulls/N/reviews \
+    --jq '.[].body | capture("<!-- prr-meta (?<m>[^>]*) -->").m'
+  ```
+
+  They are hidden only from rendering; anyone reading the raw body sees them.
 
 ## Author and license
 

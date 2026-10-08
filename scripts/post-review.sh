@@ -243,7 +243,8 @@ slack_summary="$(jq -r '.slack_summary // empty' "$payload")"
 
 # A second hidden marker records how the review was produced, for metrics
 # gathered later from the reviews API: the mode, what happened to Source B
-# (the payload's optional `source_b`), and seconds per pass from the stamps
+# (the payload's optional `source_b`), whether it ran in a fan-out pane, and
+# seconds per pass from the stamps
 # setup-review.sh and source-b-clock.sh leave. "-" means no stamp.
 # Kept apart from <!-- prr -->, which re-review detection matches exactly.
 mode="$(cat "/tmp/pr-${number}-mode" 2>/dev/null || echo unknown)"
@@ -257,7 +258,8 @@ now="$(date +%s)"
 stamp() { local v; v="$(cat "/tmp/pr-${number}-$1" 2>/dev/null || true)"; [[ "$v" =~ ^[0-9]+$ ]] && echo "$v"; return 0; }
 since() { [[ -n "$1" && -n "$2" ]] && echo $(($2 - $1)) || echo -; }
 t0="$(stamp started)"
-meta="<!-- prr-meta mode=${mode} source_b=${source_b} a_s=$(since "$t0" "$(stamp a-done)") b_s=$(since "$(stamp sourceb-started)" "$(stamp b-done)") total_s=$(since "$t0" "$now") -->"
+fanout=0; [[ -n "${PRR_FANOUT_PANE:-}" ]] && fanout=1
+meta="<!-- prr-meta mode=${mode} source_b=${source_b} fanout=${fanout} a_s=$(since "$t0" "$(stamp a-done)") b_s=$(since "$(stamp sourceb-started)" "$(stamp b-done)") total_s=$(since "$t0" "$now") -->"
 
 jq --arg meta "$meta" 'del(.slack_summary, .source_b)
     | if ((.body // "") | contains("<!-- prr -->")) then .

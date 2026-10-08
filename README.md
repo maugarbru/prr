@@ -804,7 +804,8 @@ prr-local/
 - Each posted review ends with two hidden HTML comments. `<!-- prr -->` is how
   re-review mode finds your earlier review. `<!-- prr-meta ... -->` records the
   mode, what happened to the security pass (`source_b=returned`, `timeout`,
-  `failed`...) and seconds per pass (`a_s`, `b_s`, `total_s`; `total_s`
+  `failed`...), whether it ran in a fan-out pane (`fanout=1`) and seconds per
+  pass (`a_s`, `b_s`, `total_s`; `total_s`
   includes time at the approval gate), for later metrics:
 
   ```bash

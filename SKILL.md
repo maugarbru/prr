@@ -576,8 +576,13 @@ not a precondition for it.
   `partly` criterion is a finding, usually notable, quoting the criterion
   and saying what is absent; it is a blocker only when the PR's stated
   purpose is the thing missing. Anchor it on the closest related line in
-  the diff, per step 4. An `unclear` criterion is not a finding: it goes to
-  the gate, where the user can ask the author or drop it.
+  the diff, per step 4. An `unclear` criterion is not a finding, but it is
+  not left at the gate either: it becomes a **question** to the author, an
+  inline comment worded as an ask ("can you confirm ...?"), never as a
+  claim that something is wrong. Unclear criteria are usually things the
+  code cannot show (a dashboard setting, a deploy step, a sign-off), and the
+  author is the one person who can answer. Questions never block and never
+  change the verdict; the user can drop any of them at the gate.
 - Carry Source B's `cleared` list into the report wherever it answers a
   question the author would otherwise have to ask. Knowing what was examined
   and found fine is half of what makes a review worth reading.
@@ -659,6 +664,8 @@ Show the user:
   going into the summary body instead of getting an inline comment.
 - The acceptance-criteria check from step 2: one line per criterion with its
   status and evidence, or the one line saying there was nothing to check.
+  Mark which drafted comments are questions from unclear criteria, so they
+  are easy to drop.
 - The proposed verdict.
 - If Source B failed or was skipped, one line saying which, so the user knows
   the review is single-source before they answer.
@@ -1037,9 +1044,10 @@ The user's menu pick from R3 maps to one of:
   it never read). Then build `/tmp/pr-<N>-review.json` as in
   step 6, with `commit_id` set to the **current** head sha. The `body`
   summarizes the per-finding status; include inline `comments` only on
-  findings that are still open or newly regressed, and on acceptance
-  criteria that are missing or partly done (anchored on lines in the
-  current diff, per step 4's anchoring rule) — not on fixed or moot ones.
+  findings that are still open or newly regressed, on acceptance criteria
+  that are missing or partly done, and as questions on criteria that are
+  still unclear and were not already asked last round (anchored on lines in
+  the current diff, per step 4's anchoring rule) — not on fixed or moot ones.
   Add `prior`, the per-finding counts from R2, as
   `{"fixed": N, "partly": N, "open": N, "moot": N, "unclear": N}` (all
   zeros when the earlier review had no findings), and `ac` as step 6

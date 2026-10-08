@@ -20,6 +20,8 @@
 #                the skill reviews sequentially. "off" (also none/false/0) forces
 #                sequential (exit 3) even with tmux installed. Back-compat:
 #                PRR_FANOUT=true and the legacy PRR_TMUX_FANOUT=true both mean tmux.
+#   PRR_FANOUT_COMMAND  the slash command each pane runs before the PR ref
+#                (default "/prr"), for skills layered on prr.
 #   (PRR_FANOUT_TIMEOUT_MINS / PRR_FANOUT_GEOMETRY / PRR_FANOUT_TERMINAL are read
 #    by the backends; see their headers.)
 #
@@ -101,6 +103,12 @@ case "$backend" in
   tmux|wezterm|terminator) ;;
   *) echo "prr-fanout: PRR_FANOUT must be 'tmux', 'wezterm', 'terminator', or 'off' (got '$backend')." >&2; exit 3 ;;
 esac
+
+# The pane command lands inside a quoted shell string, so allow only a slash
+# command plus plain words.
+if [[ -n "${PRR_FANOUT_COMMAND:-}" && ! "$PRR_FANOUT_COMMAND" =~ ^/[A-Za-z0-9:_-]+(\ [A-Za-z0-9_-]+)*$ ]]; then
+  echo "prr-fanout: PRR_FANOUT_COMMAND must be a slash command plus plain words (got '$PRR_FANOUT_COMMAND')." >&2; exit 2
+fi
 
 # Hand off to the selected backend. Export the normalized value so the backend's
 # own guard sees the canonical name regardless of which alias was used.

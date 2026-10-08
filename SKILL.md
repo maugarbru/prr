@@ -657,6 +657,19 @@ plain-prose docs change per step 2.** Do not open this gate on a
 Source-A-only set of findings while the agent is still running. See "The gate
 WAITS for Source B" in step 2.
 
+**Then re-read the threads, every time, just before showing the gate:**
+
+```
+~/.claude/skills/prr/scripts/setup-review.sh --threads <PR-url-or-number>
+```
+
+It touches nothing but the comment artifact and lists what other people
+posted since this review started. A review takes minutes, and other
+reviewers and bots post in that time: on one PR, Copilot raised the same
+finding as ours while the review was running, and the posted review missed
+the chance to concur. Fold anything new in by step 3's rules (concur, or say
+why you disagree), and drop any drafted comment it now duplicates.
+
 Show the user:
 - The ranked findings.
 - Every drafted inline comment (file, line, body) verbatim.
@@ -802,6 +815,10 @@ containing:
   never the criteria text: like `source_b`, it is stripped from the posted
   body and recorded in `prr-meta`. Include it on every review that posts,
   so "not checked" never looks like "nothing to check".
+- `replies` — optional; thread replies approved at the gate, as
+  `[{"in_reply_to": <comment id>, "body": "..."}]`. Posted after the review,
+  in the existing threads, under the same plain-ASCII rules. Never used to
+  restate a finding.
 - `slack_summary` — **required whenever the review posts** (i.e. every run
   except a self-review, which posts nothing). A single short, plain,
   informal sentence summarizing the action you took, used as the threaded
@@ -942,6 +959,8 @@ Extra artifacts from step 1, alongside the usual ones:
   printed. If that file says the prior commit was not fetchable (rebase or
   force-push), fall back to the full PR diff (`pr-<N>-diff.txt`) and say so
   in the report.
+- Read the author's replies under each prior finding: the comments in
+  `pr-<N>-comments.json` whose `in_reply_to_id` is that finding's comment.
 - Fetch the linked ticket's acceptance criteria exactly as step 1 does. The
   earlier review recorded only counts, so R2 re-checks every criterion
   against the current head; criteria are short and the ticket may have
@@ -969,8 +988,30 @@ unclear. Look before settling on unclear - open the file, follow the call -
 but if it is still unclear after looking, say so: the count of findings that
 stayed unclear is recorded, and an honest unclear is the useful number.
 
+Give each prior finding's author reply exactly one kind, separate from its
+status (a reply can say "fixed" when the code says otherwise):
+
+- **fixed** (`fixed`) — says it is fixed. The status still comes from the
+  code, never from the reply.
+- **deferred** (`deferred`) — names where it will be done: a PR, a ticket, a
+  follow-up. A deferral with a concrete plan gets no repeat inline comment;
+  note the plan in the body. A vague "later" is not a plan, so it is
+  treated as no reply.
+- **disagrees** (`disagrees`) — argues the finding is wrong or not worth
+  doing. Weigh the argument on the evidence. If it holds, concede in a
+  thread reply and stop raising it. If it does not, answer in a thread
+  reply with the reason; never restate the finding as a new comment.
+- **question** (`question`) — asks something. Answer it in a thread reply.
+- **none** (`none`) — no reply.
+
+Thread replies are drafted here and shown at the gate like inline comments;
+nothing is posted before the user picks.
+
 Re-check the acceptance criteria from R1 the same way as step 2, with the
-same four statuses and the same evidence rule.
+same four statuses and the same evidence rule. One addition: an unclear
+criterion that the author has since answered with specific evidence (what
+they checked and what it showed) becomes done or missing on that answer;
+cite the reply as the evidence.
 
 Then skim the since-diff once for any obvious regression the fixes
 introduced. This is a light pass, not a new dual-source review.
@@ -982,7 +1023,9 @@ When it is done, stamp it as step 2 describes:
 
 Show the user:
 - A per-finding status list — Fixed / Partially fixed / Not addressed /
-  No longer applies / Unclear — each with its evidence.
+  No longer applies / Unclear — each with its evidence and the kind of
+  author reply.
+- Every drafted thread reply, verbatim, with the thread it answers.
 - The acceptance-criteria check, one line per criterion, or the one line
   saying there was nothing to check.
 - Any regression noticed in R2.
@@ -990,6 +1033,8 @@ Show the user:
   blocker is fixed, otherwise `REQUEST_CHANGES`. Only fall back to
   `COMMENT` if it is genuinely unclear whether the blockers were
   addressed and you need more information from the author to decide.
+
+Re-read the threads with `setup-review.sh --threads` first, as step 5 does.
 
 Then ask with `AskUserQuestion`, same as step 5. Re-review always keeps a
 "report only" option, because posting nothing is a normal outcome here.
@@ -1050,7 +1095,10 @@ The user's menu pick from R3 maps to one of:
   the current diff, per step 4's anchoring rule) — not on fixed or moot ones.
   Add `prior`, the per-finding counts from R2, as
   `{"fixed": N, "partly": N, "open": N, "moot": N, "unclear": N}` (all
-  zeros when the earlier review had no findings), and `ac` as step 6
+  zeros when the earlier review had no findings), `author_replies`, the
+  reply kinds from R2, as
+  `{"fixed": N, "deferred": N, "disagrees": N, "question": N, "none": N}`,
+  `replies` for the approved thread replies, and `ac` as step 6
   describes. Both are recorded in `prr-meta` as counts and stripped from
   the posted body. Then run the post script with the payload.
 

@@ -5,11 +5,17 @@
 # a re-review of a PR you already reviewed.
 #
 # Usage:  setup-review.sh [--silent] <PR-url-or-number> [owner/repo]
+#         setup-review.sh --threads <PR-url-or-number> [owner/repo]
 # A full PR URL works from any directory; a bare PR number must be run from
 # inside the PR's git repo.
 #
 # --silent is stealth mode: suppress every Slack signal for this review, so
 # nothing on the team's chat post says it is happening or how it ended.
+#
+# --threads touches nothing but the comment artifact: it re-reads the PR's
+# inline comments and reviews, rewrites /tmp/pr-<N>-comments.json, and lists
+# what other people posted since this review started, so a comment that lands
+# mid-review (another reviewer, a bot, an author reply) is seen before the gate.
 #
 # Author: Steve Woodruff (@sjwoodr)
 # SPDX-License-Identifier: MIT
@@ -20,10 +26,12 @@ set -euo pipefail
 # accepted alongside `--silent` because the skill's own front-door form reads
 # `/prr silent <PR>`, mirroring `/prr test-mode <PR>`.
 silent=0
+threads=0
 _args=()
 for _a in "$@"; do
   case "$_a" in
     --silent|silent) silent=1 ;;
+    --threads) threads=1 ;;
     *) _args+=("$_a") ;;
   esac
 done
@@ -61,6 +69,32 @@ if [[ -z "$repo" ]]; then
     exit 2
   fi
   repo="$current_repo"
+fi
+
+if ((threads)); then
+  comments="/tmp/pr-${number}-comments.json"
+  started="$(cat "/tmp/pr-${number}-started" 2>/dev/null || echo 0)"
+  [[ "$started" =~ ^[0-9]+$ ]] || started=0
+  me="$(gh api user --jq .login)"
+  gh api --paginate "repos/${repo}/pulls/${number}/comments" | jq -s 'add // []' > "$comments.tmp" \
+    && mv "$comments.tmp" "$comments"
+  reviews_now="$(gh api --paginate "repos/${repo}/pulls/${number}/reviews" | jq -s 'add // []')"
+  # New since the stamp, and not yours. A review with an empty body is a
+  # thread reply's wrapper; its comment is already in the inline list.
+  new="$(jq -r --arg me "$me" --argjson t "$started" --argjson reviews "$reviews_now" '
+    def recent(ts): (ts | sub("\\.[0-9]+"; "") | fromdateiso8601) >= $t;
+    ( [ .[] | select(.user.login != $me and recent(.created_at))
+        | "inline  \(.user.login)  \(.path):\(.line // .original_line // "-")\(if .in_reply_to_id then "  (reply in thread \(.in_reply_to_id))" else "" end)\n        \(.body | gsub("\n"; " ") | .[0:300])" ]
+    + [ $reviews[] | select(.user.login != $me and .submitted_at != null and recent(.submitted_at) and ((.body // "") != ""))
+        | "review  \(.user.login)  \(.state)\n        \(.body | gsub("\n"; " ") | .[0:300])" ] )
+    | .[]' "$comments")"
+  echo "prr threads: ${repo} #${number}, since $( ((started)) && date -d "@$started" '+%H:%M:%S' || echo 'the beginning')"
+  if [[ -n "$new" ]]; then
+    printf '%s\n' "$new"
+  else
+    echo "  nothing new from anyone else"
+  fi
+  exit 0
 fi
 
 wt="/tmp/pr-${number}-wt"

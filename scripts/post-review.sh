@@ -270,6 +270,9 @@ checks="$(jq -r '
   [ (.prior | if type == "object" then
         "prior_fixed=\(n("fixed")) prior_partly=\(n("partly")) prior_open=\(n("open")) prior_moot=\(n("moot")) prior_unclear=\(n("unclear"))"
       else empty end),
+    (.author_replies | if type == "object" then
+        "reply_fixed=\(n("fixed")) reply_deferred=\(n("deferred")) reply_disagrees=\(n("disagrees")) reply_question=\(n("question")) reply_none=\(n("none"))"
+      else empty end),
     (.ac | if . == "no-ticket" or . == "no-criteria" or . == "unread" then "ac=\(.)"
       elif type == "object" then
         "ac=\(n("done") + n("partly") + n("missing") + n("unclear")) ac_done=\(n("done")) ac_partly=\(n("partly")) ac_missing=\(n("missing")) ac_unclear=\(n("unclear"))"
@@ -277,7 +280,11 @@ checks="$(jq -r '
   ] | join(" ")' "$payload")"
 meta="<!-- prr-meta mode=${mode} source_b=${source_b} fanout=${fanout} a_s=$(since "$t0" "$(stamp a-done)") b_s=$(since "$(stamp sourceb-started)" "$(stamp b-done)") total_s=$(since "$t0" "$now")${checks:+ $checks} -->"
 
-jq --arg meta "$meta" 'del(.slack_summary, .source_b, .prior, .ac)
+# Thread replies (payload `replies`: [{in_reply_to, body}]) are posted after
+# the review, in the existing threads; they are never part of the review.
+replies="$(jq -c '[.replies // [] | .[] | select((.in_reply_to | type) == "number" and ((.body // "") != ""))]' "$payload")"
+
+jq --arg meta "$meta" 'del(.slack_summary, .source_b, .prior, .ac, .author_replies, .replies)
     | if ((.body // "") | contains("<!-- prr -->")) then .
       else .body = ((.body // "") + "\n\n<!-- prr -->") end
     | if ((.body // "") | contains("<!-- prr-meta ")) then .
@@ -349,6 +356,17 @@ else
   echo "$out" >&2
   exit 1
 fi
+
+# Replies in existing threads, approved at the gate with the review. Best
+# effort: the review is posted, so a failed reply is reported, not fatal.
+while IFS= read -r r; do
+  [[ -n "$r" ]] || continue
+  to="$(jq -r .in_reply_to <<<"$r")"
+  if ! jq '{body}' <<<"$r" | gh api "repos/${repo}/pulls/${number}/comments/${to}/replies" \
+       --method POST --input - --jq '"posted thread reply id=\(.id) in thread \(.in_reply_to_id)"'; then
+    echo "warning: could not post the reply in thread ${to}" >&2
+  fi
+done < <(jq -c '.[]' <<<"$replies")
 
 # Optional: signal the review outcome on the team's PR chat post. No-op unless
 # both SLACK_BOT_TOKEN and PRR_CODE_REVIEWS_CHANNEL are set. We clear the

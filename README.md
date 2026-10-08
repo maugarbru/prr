@@ -813,6 +813,8 @@ prr-local/
     none) or `ac=unread` (a ticket is linked but could not be fetched).
   - `prior_fixed=3 prior_partly=1 prior_open=1 prior_moot=0 prior_unclear=1`
     (re-reviews only): what became of each finding from the last review.
+  - `reply_fixed=1 reply_deferred=1 reply_disagrees=0 reply_question=0 reply_none=0`
+    (re-reviews only): how the author answered each of those findings.
 
   For later metrics:
 

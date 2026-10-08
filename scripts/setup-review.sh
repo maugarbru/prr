@@ -155,7 +155,9 @@ if [[ -n "$pr_author" && "$pr_author" == "$me" ]]; then
   mode="self-review"
 else
   prior="$(jq -c --arg me "$me" '
-    [ .[] | select(.user.login == $me) ] as $mine
+    # A thread reply is a COMMENTED review with an empty body, not a review.
+    [ .[] | select(.user.login == $me)
+          | select(.state != "COMMENTED" or (.body // "") != "") ] as $mine
     | ( ( [ $mine[] | select((.body // "") | contains("<!-- prr -->")) ] | last )
         // ( $mine | last ) )
     // empty

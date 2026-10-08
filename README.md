@@ -407,12 +407,67 @@ your earlier prr review and switches to an **incremental re-review**:
 
 - It does **not** repeat the full two-pass review.
 - It looks only at the commits pushed since your review and marks each prior
-  finding **Fixed / Partially fixed / Not addressed / Unclear**.
+  finding **Fixed / Partially fixed / Not addressed / No longer applies /
+  Unclear**, and sorts the author's reply to each (see
+  [JEB](#jeb-just-evidence-buddy)).
 - It proposes an updated verdict (e.g. APPROVE once every blocker is
   resolved).
 
 To force a full fresh review of an already-reviewed PR, say so when you
 invoke it.
+
+## JEB: Just Evidence, Buddy
+
+A review is full of small decisions that are really multiple choice: is this
+ticket criterion done, was that finding fixed, is the author's reply a fix,
+a plan or a pushback? Left as prose, those calls drift from one review to the
+next and can't be counted. JEB turns them into typed checks: a fixed set of
+answers, one answer per item, and evidence for every answer.
+
+| Check | When | Answers |
+|---|---|---|
+| Ticket acceptance criteria | every review with a linked Jira ticket or GitHub issue | done / partly / missing / unclear |
+| Earlier findings | re-reviews | fixed / partly / open / no longer applies / unclear |
+| Author replies to those findings | re-reviews | fixed / deferred (with a plan) / disagrees / question / none |
+| New comments from others | just before every gate | re-read with `setup-review.sh --threads` |
+
+The rule that gives it its name: **no evidence, no answer.** "Done", "fixed"
+or "no longer applies" without a `file:line` (or a cited reply from the
+author) is recorded as "unclear", and an honest unclear is treated as the
+useful answer, not a failure. What happens next follows from the answer:
+
+- Missing or partly done criteria become findings, quoting the criterion.
+- Unclear criteria become **questions** to the author ("can you confirm ...?"),
+  never claims. They are usually things the code can't show, like a
+  dashboard setting or a deploy step, and the author is the one person who
+  can answer.
+- A deferral with a concrete plan (a follow-up PR, a ticket) gets no repeat
+  comment. A disagreement or a question gets a thread reply drafted at the
+  gate, never a restated finding.
+- Nothing from JEB blocks on its own or overrides your pick at the gate.
+
+**Inspired by Jev.** [Jev](https://docs.typesafe.ai/) is TypeSafe AI's
+"System One" model: instead of generating text, it answers typed questions
+(yes/no, multiple choice, a score) with calibrated probabilities. Its
+[cookbooks](https://docs.typesafe.ai/cookbooks), especially
+[classification using confidence](https://docs.typesafe.ai/cookbooks/classification_using_confidence.md),
+make the case for narrow questions with fixed answers and for falling back
+to something safer when the answer is uncertain. JEB borrows that shape, but
+the model already doing the review answers the questions, so there is no
+extra service, no subscription, and no code sent anywhere it wasn't already
+going. What it gives up is the calibrated probability; the evidence rule
+and the explicit "unclear" stand in for it. JEB is not affiliated with
+TypeSafe AI.
+
+Every answer is recorded as a count, never as text, in the review's hidden
+`prr-meta` marker (`ac_*`, `prior_*`, `reply_*`; see
+[Good to know](#good-to-know)), so you can tally how often criteria were
+missing or findings stayed unclear across all your reviews:
+
+```bash
+gh api --paginate repos/OWNER/REPO/pulls/N/reviews \
+  --jq '.[].body | capture("<!-- prr-meta (?<m>[^>]*) -->").m'
+```
 
 ## Self-review mode
 

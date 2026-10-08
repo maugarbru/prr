@@ -274,9 +274,14 @@ Then:
   - **GitHub issue:** `gh issue view <num> --repo <owner/repo>` (read
     the body + comments for AC).
   - **Jira ticket:** use the Atlassian MCP `getJiraIssue` tool if
-    available. If no Atlassian MCP is configured, the tool is missing,
-    or the call fails for auth reasons, silently skip the fetch and
-    proceed without ticket context. Note the skip once in your console
+    available. **Actually call it.** MCP tools are often deferred: listed
+    by name only until loaded, so load it first (in Claude Code,
+    `ToolSearch` with `select:mcp__atlassian__getJiraIssue`). A tool you
+    have not tried to load is not missing. Not hypothetical: an unattended
+    run in a session where Jira worked earlier that day recorded "unread"
+    for two reviews without ever making the call. Only if no Atlassian MCP
+    is configured, the load finds nothing, or the call itself fails (auth,
+    error), skip the fetch and proceed without ticket context. Note the skip once in your console
     output so the user knows the ticket was not read, and record
     `ac: "unread"` in step 6. Do **not** mention
     the skip in any drafted review body or inline comment — that detail

@@ -243,8 +243,8 @@ slack_summary="$(jq -r '.slack_summary // empty' "$payload")"
 
 # A second hidden marker records how the review was produced, for metrics
 # gathered later from the reviews API: the mode, what happened to Source B
-# (the payload's optional `source_b`), whether it ran in a fan-out pane, and
-# seconds per pass from the stamps
+# (the payload's optional `source_b`), whether it ran in a fan-out pane, the
+# finding and ticket checks (below), and seconds per pass from the stamps
 # setup-review.sh and source-b-clock.sh leave. "-" means no stamp.
 # Kept apart from <!-- prr -->, which re-review detection matches exactly.
 mode="$(cat "/tmp/pr-${number}-mode" 2>/dev/null || echo unknown)"
@@ -259,9 +259,24 @@ stamp() { local v; v="$(cat "/tmp/pr-${number}-$1" 2>/dev/null || true)"; [[ "$v
 since() { [[ -n "$1" && -n "$2" ]] && echo $(($2 - $1)) || echo -; }
 t0="$(stamp started)"
 fanout=0; [[ -n "${PRR_FANOUT_PANE:-}" ]] && fanout=1
-meta="<!-- prr-meta mode=${mode} source_b=${source_b} fanout=${fanout} a_s=$(since "$t0" "$(stamp a-done)") b_s=$(since "$(stamp sourceb-started)" "$(stamp b-done)") total_s=$(since "$t0" "$now") -->"
+# The payload's optional `prior` (re-review: status of each earlier finding)
+# and `ac` (ticket acceptance criteria) become counts, never text: the line
+# is hidden only from rendering. ac="none" means there was nothing to check,
+# which is not the same as checking and finding everything done. A missing
+# or malformed field records nothing rather than a guess.
+checks="$(jq -r '
+  def n(k): (.[k] // 0) | (tonumber? // 0) | floor | if . < 0 then 0 else . end;
+  [ (.prior | if type == "object" then
+        "prior_fixed=\(n("fixed")) prior_partly=\(n("partly")) prior_open=\(n("open")) prior_moot=\(n("moot")) prior_unclear=\(n("unclear"))"
+      else empty end),
+    (.ac | if . == "none" then "ac=none"
+      elif type == "object" then
+        "ac=\(n("done") + n("partly") + n("missing") + n("unclear")) ac_done=\(n("done")) ac_partly=\(n("partly")) ac_missing=\(n("missing")) ac_unclear=\(n("unclear"))"
+      else empty end)
+  ] | join(" ")' "$payload")"
+meta="<!-- prr-meta mode=${mode} source_b=${source_b} fanout=${fanout} a_s=$(since "$t0" "$(stamp a-done)") b_s=$(since "$(stamp sourceb-started)" "$(stamp b-done)") total_s=$(since "$t0" "$now")${checks:+ $checks} -->"
 
-jq --arg meta "$meta" 'del(.slack_summary, .source_b)
+jq --arg meta "$meta" 'del(.slack_summary, .source_b, .prior, .ac)
     | if ((.body // "") | contains("<!-- prr -->")) then .
       else .body = ((.body // "") + "\n\n<!-- prr -->") end
     | if ((.body // "") | contains("<!-- prr-meta ")) then .

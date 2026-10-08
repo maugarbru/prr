@@ -355,6 +355,20 @@ time; the two passes must overlap.
     that is not visible in the code; history lives in the commit message
     and PR body. Match the repo's convention, but its shortest reasonable
     form. Rank it a nit, unless the prose also asserts something stale.
+  - **Check each acceptance criterion.** When step 1 found a ticket with
+    acceptance criteria, give every criterion exactly one status:
+    - **done** - the diff implements it. Cite the `file:line` that does.
+    - **partly** - some of it is there; say what is missing.
+    - **missing** - nothing in the diff does it.
+    - **unclear** - you cannot tell from the diff and the worktree; say
+      why.
+
+    Evidence decides the status, not the PR description: "done" or
+    "partly" without a `file:line` is "unclear". Criteria that are not
+    code (a demo, a doc page, a deploy step) are done or missing like any
+    other, from what the PR contains. With no ticket, or a ticket that has
+    no acceptance criteria, there is nothing to check; record `ac: "none"`
+    in step 6 and say so once at the gate.
 
 Collect Source B's result once it completes.
 
@@ -552,6 +566,12 @@ not a precondition for it.
 - Keep only legitimate, evidence-backed findings. For each, cite
   `file:line` from the worktree.
 - Rank: blocker / notable / nit.
+- **Acceptance criteria that are not done become findings.** A `missing` or
+  `partly` criterion is a finding, usually notable, quoting the criterion
+  and saying what is absent; it is a blocker only when the PR's stated
+  purpose is the thing missing. Anchor it on the closest related line in
+  the diff, per step 4. An `unclear` criterion is not a finding: it goes to
+  the gate, where the user can ask the author or drop it.
 - Carry Source B's `cleared` list into the report wherever it answers a
   question the author would otherwise have to ask. Knowing what was examined
   and found fine is half of what makes a review worth reading.
@@ -631,6 +651,8 @@ Show the user:
 - Every drafted inline comment (file, line, body) verbatim.
 - The concurred list from step 3, if any, so it is clear which findings are
   going into the summary body instead of getting an inline comment.
+- The acceptance-criteria check from step 2: one line per criterion with its
+  status and evidence, or the one line saying there was nothing to check.
 - The proposed verdict.
 - If Source B failed or was skipped, one line saying which, so the user knows
   the review is single-source before they answer.
@@ -760,6 +782,12 @@ containing:
   `skipped-prose`, `failed`, `stubbed` or `timeout` (a re-review may omit
   it). It is stripped from the posted body and recorded in the hidden
   `prr-meta` marker, so report it honestly.
+- `ac` — the acceptance-criteria counts from step 2, as
+  `{"done": N, "partly": N, "missing": N, "unclear": N}`, or the string
+  `"none"` when there was no ticket or no criteria to check. Counts only,
+  never the criteria text: like `source_b`, it is stripped from the posted
+  body and recorded in `prr-meta`. Include it on every review that posts,
+  so "not checked" never looks like "nothing to check".
 - `slack_summary` — **required whenever the review posts** (i.e. every run
   except a self-review, which posts nothing). A single short, plain,
   informal sentence summarizing the action you took, used as the threaded
@@ -900,6 +928,10 @@ Extra artifacts from step 1, alongside the usual ones:
   printed. If that file says the prior commit was not fetchable (rebase or
   force-push), fall back to the full PR diff (`pr-<N>-diff.txt`) and say so
   in the report.
+- Fetch the linked ticket's acceptance criteria exactly as step 1 does. The
+  earlier review recorded only counts, so R2 re-checks every criterion
+  against the current head; criteria are short and the ticket may have
+  changed since.
 
 ## R2. Check each prior finding
 
@@ -907,13 +939,26 @@ For every finding in the prior review, decide its status from the
 since-diff and the current file in the worktree (`/tmp/pr-<N>-wt`). Use
 `rg` for any code search.
 
-- **Fixed** — the change resolves the finding.
-- **Partially fixed** — addressed but incomplete; say what still remains.
-- **Not addressed** — no relevant change since the review.
-- **Unclear** — cannot tell from the diff; say why.
+- **Fixed** (`fixed`) — the change resolves the finding.
+- **Partially fixed** (`partly`) — addressed but incomplete; say what still
+  remains.
+- **Not addressed** (`open`) — no relevant change since the review.
+- **No longer applies** (`moot`) — the code the finding was about is gone or
+  rewritten so the concern cannot arise. Different from fixed: nobody
+  resolved it, the question went away. Say what removed it.
+- **Unclear** (`unclear`) — cannot tell from the diff and the worktree; say
+  why.
 
-Cite the commit or `file:line` that resolves (or fails to resolve) each
-one. Then skim the since-diff once for any obvious regression the fixes
+Exactly one status per finding. Cite the commit or `file:line` that resolves
+(or fails to resolve) each one; a fixed or moot status without one is
+unclear. Look before settling on unclear - open the file, follow the call -
+but if it is still unclear after looking, say so: the count of findings that
+stayed unclear is recorded, and an honest unclear is the useful number.
+
+Re-check the acceptance criteria from R1 the same way as step 2, with the
+same four statuses and the same evidence rule.
+
+Then skim the since-diff once for any obvious regression the fixes
 introduced. This is a light pass, not a new dual-source review.
 
 When it is done, stamp it as step 2 describes:
@@ -923,7 +968,9 @@ When it is done, stamp it as step 2 describes:
 
 Show the user:
 - A per-finding status list — Fixed / Partially fixed / Not addressed /
-  Unclear — each with its evidence.
+  No longer applies / Unclear — each with its evidence.
+- The acceptance-criteria check, one line per criterion, or the one line
+  saying there was nothing to check.
 - Any regression noticed in R2.
 - A proposed updated verdict, decisive by default: `APPROVE` if every
   blocker is fixed, otherwise `REQUEST_CHANGES`. Only fall back to
@@ -983,9 +1030,14 @@ The user's menu pick from R3 maps to one of:
   it never read). Then build `/tmp/pr-<N>-review.json` as in
   step 6, with `commit_id` set to the **current** head sha. The `body`
   summarizes the per-finding status; include inline `comments` only on
-  findings that are still open or newly regressed (anchored on lines in
-  the current diff, per step 4's anchoring rule) — not on fixed ones.
-  Then run the post script with the payload.
+  findings that are still open or newly regressed, and on acceptance
+  criteria that are missing or partly done (anchored on lines in the
+  current diff, per step 4's anchoring rule) — not on fixed or moot ones.
+  Add `prior`, the per-finding counts from R2, as
+  `{"fixed": N, "partly": N, "open": N, "moot": N, "unclear": N}` (all
+  zeros when the earlier review had no findings), and `ac` as step 6
+  describes. Both are recorded in `prr-meta` as counts and stripped from
+  the posted body. Then run the post script with the payload.
 
 Either way, finish with `post-review.sh` so the worktree and artifacts are
 removed. Its own `cleanup verified:` / `cleanup INCOMPLETE:` line is the

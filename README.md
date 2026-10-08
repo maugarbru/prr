@@ -804,9 +804,16 @@ prr-local/
 - Each posted review ends with two hidden HTML comments. `<!-- prr -->` is how
   re-review mode finds your earlier review. `<!-- prr-meta ... -->` records the
   mode, what happened to the security pass (`source_b=returned`, `timeout`,
-  `failed`...), whether it ran in a fan-out pane (`fanout=1`) and seconds per
+  `failed`...), whether it ran in a fan-out pane (`fanout=1`), seconds per
   pass (`a_s`, `b_s`, `total_s`; `total_s`
-  includes time at the approval gate), for later metrics:
+  includes time at the approval gate), and two checks as counts:
+  - `ac=6 ac_done=4 ac_partly=1 ac_missing=0 ac_unclear=1`: the linked
+    ticket's acceptance criteria, each checked against the diff (`ac=none`
+    when there was nothing to check).
+  - `prior_fixed=3 prior_partly=1 prior_open=1 prior_moot=0 prior_unclear=1`
+    (re-reviews only): what became of each finding from the last review.
+
+  For later metrics:
 
   ```bash
   gh api --paginate repos/OWNER/REPO/pulls/N/reviews \

@@ -314,6 +314,9 @@ Tune (or opt out) via environment:
     `PRR_TMUX_FANOUT=true` are aliases).
   - **`wezterm`** / **`terminator`** — use a reference backend instead (see the
     backend list above). Single-PR runs ignore `PRR_FANOUT` entirely.
+- `PRR_FANOUT_COMMAND` — the slash command each pane runs before its PR ref;
+  default `/prr`. Lets a skill layered on prr reuse the fan-out. Only a slash
+  command plus plain words is accepted.
 - `PRR_FANOUT_TIMEOUT_MINS` — global wall-clock cap on the run; default `240`
   (4h). `0` disables the cap (safe, since waiting is token-free). On timeout the
   launcher stops, reports which PRs are still open, and **leaves your in-progress

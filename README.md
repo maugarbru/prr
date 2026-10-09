@@ -358,7 +358,7 @@ Tune (or opt out) via environment:
   automatically.
 - `PRR_FANOUT_GEOMETRY` — size of the spawned window as `COLSxROWS`; default
   `160x50`, or `120x40` when there is only one PR (`/prr bg <PR>`).
-  `PRR_FANOUT_GEOMETRY_SINGLE` sets the one-PR size on its own. On Linux it is applied via the terminal's geometry flag
+  On Linux it is applied via the terminal's geometry flag
   (`tilix`/`terminator`/`gnome-terminal` `--geometry=`, `xterm` `-geometry`); on macOS
   iTerm2 has `columns`/`rows` set directly on the new window, and every other app
   self-resizes with a terminal escape that Terminal.app honors.
@@ -368,6 +368,9 @@ Tune (or opt out) via environment:
   `--config initial_cols`/`initial_rows` overrides instead. Bump it for big
   batches so the tiled panes stay readable (e.g. `220x60` for a 3x3 grid of
   eight).
+- `PRR_FANOUT_GEOMETRY_SINGLE` — the window size for a single-PR fan-out
+  (`/prr bg <PR>`) only, as `COLSxROWS`. Unset, one PR uses `PRR_FANOUT_GEOMETRY`
+  if that is set, else `120x40`.
 
 Notes: `gnome-terminal` runs its command in a background server, so depending on
 your profile's "When command exits" setting the window may linger after the
@@ -404,7 +407,8 @@ This backend is **Linux-only** — not because wezterm is (it runs fine on macOS
 but because the backend's launch + isolation mechanics are: it detaches the gui
 with `setsid` (absent on macOS) and locates the new instance's socket under the
 XDG runtime dir. On macOS, use `PRR_FANOUT=tmux`, which drives wezterm just fine.
-`PRR_FANOUT_TIMEOUT_MINS` and `PRR_FANOUT_GEOMETRY` apply the same way; the
+`PRR_FANOUT_TIMEOUT_MINS`, `PRR_FANOUT_GEOMETRY` and `PRR_FANOUT_GEOMETRY_SINGLE`
+apply the same way; the
 geometry sizes the window via wezterm's `initial_cols`/`initial_rows`. Smoke-test
 it with `PRR_FANOUT=wezterm /prr test-mode 1 2 3 4 5`.
 

@@ -278,7 +278,18 @@ checks="$(jq -r '
         "ac=\(n("done") + n("partly") + n("missing") + n("unclear")) ac_done=\(n("done")) ac_partly=\(n("partly")) ac_missing=\(n("missing")) ac_unclear=\(n("unclear"))"
       else empty end)
   ] | join(" ")' "$payload")"
-meta="<!-- prr-meta mode=${mode} source_b=${source_b} fanout=${fanout} a_s=$(since "$t0" "$(stamp a-done)") b_s=$(since "$(stamp sourceb-started)" "$(stamp b-done)") total_s=$(since "$t0" "$now")${checks:+ $checks} -->"
+# The prr commit that posted this review (short sha, "+" with local edits), so
+# usage stats can tell who runs an old copy. Only when prr is its own git
+# checkout: inside some other repo, rev-parse would name that repo's commit.
+prr_root="$(cd "$script_dir/.." && pwd -P)"
+version=""
+if [[ "$(git -C "$prr_root" rev-parse --show-toplevel 2>/dev/null)" == "$prr_root" ]]; then
+  version="$(git -C "$prr_root" rev-parse --short=7 HEAD 2>/dev/null || true)"
+  if [[ -n "$version" && -n "$(git -C "$prr_root" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+    version="${version}+"
+  fi
+fi
+meta="<!-- prr-meta ${version:+v=$version }mode=${mode} source_b=${source_b} fanout=${fanout} a_s=$(since "$t0" "$(stamp a-done)") b_s=$(since "$(stamp sourceb-started)" "$(stamp b-done)") total_s=$(since "$t0" "$now")${checks:+ $checks} -->"
 
 # Thread replies (payload `replies`: [{in_reply_to, body}]) are posted after
 # the review, in the existing threads; they are never part of the review.

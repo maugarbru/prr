@@ -878,6 +878,8 @@ prr-local/
   aid, not a bot account.
 - Each posted review ends with two hidden HTML comments. `<!-- prr -->` is how
   re-review mode finds your earlier review. `<!-- prr-meta ... -->` records the
+  prr version that posted it (`v=4b42fcc`, the checkout's short commit, with a
+  `+` when it has local edits; left out when prr is not a git checkout), the
   mode, what happened to the security pass (`source_b=returned`, `timeout`,
   `failed`...), whether it ran in a fan-out pane (`fanout=1`), seconds per
   pass (`a_s`, `b_s`, `total_s`; `total_s`

@@ -57,6 +57,18 @@ remaining() {
 # /tmp/prr-findings-<n>.md; an older one from another run must not be named).
 fanout_stamp="$(mktemp "${TMPDIR:-/tmp}/prr-fanout-stamp.XXXXXX")"
 
+# Window size as COLSxROWS for $1 panes. One pane (`/prr bg <PR>`) gets an
+# ordinary terminal; a grid gets room for its panes. PRR_FANOUT_GEOMETRY_SINGLE
+# overrides the one-pane size, PRR_FANOUT_GEOMETRY every other (and the one-pane
+# size too, when _SINGLE is unset).
+fanout_geometry() {
+  if (( $1 == 1 )); then
+    echo "${PRR_FANOUT_GEOMETRY_SINGLE:-${PRR_FANOUT_GEOMETRY:-120x40}}"
+  else
+    echo "${PRR_FANOUT_GEOMETRY:-160x50}"
+  fi
+}
+
 # Print the consolidated rollup of every PR's outcome. Reads numbers + done_map.
 print_rollup() {
   echo

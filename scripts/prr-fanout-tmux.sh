@@ -31,7 +31,8 @@
 #   PRR_FANOUT_TIMEOUT_MINS  global wall-clock cap; default 240 (4h); 0 = no cap
 #   PRR_FANOUT_TERMINAL      force a terminal, skipping auto-detection (a binary on
 #                            Linux, an app name on macOS e.g. iTerm / Ghostty / WezTerm)
-#   PRR_FANOUT_GEOMETRY      spawned window size as COLSxROWS; default 160x50
+#   PRR_FANOUT_GEOMETRY      spawned window size as COLSxROWS; default 160x50, or 120x40 for one PR
+#   PRR_FANOUT_GEOMETRY_SINGLE  the one-PR size, overriding the above
 #
 # Author: Steve Woodruff (@sjwoodr)
 # SPDX-License-Identifier: MIT
@@ -142,7 +143,7 @@ tmux set-hook -t "$session" client-attached 'select-layout tiled' >/dev/null 2>&
 # via AppleScript (no -e/--geometry there); Linux uses per-terminal flags
 # (tilix/terminator/gnome-terminal --geometry=, xterm -geometry, wezterm --config
 # initial_cols/initial_rows; others open default-sized).
-geo="${PRR_FANOUT_GEOMETRY:-160x50}"
+geo="$(fanout_geometry "${#refs[@]}")"
 cols="${geo%%x*}"; rows="${geo##*x}"
 attach="tmux attach -t $session"
 # Capture the terminal spawn's stderr so a failed launch (e.g. a bad flag) is not

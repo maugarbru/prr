@@ -38,7 +38,8 @@
 # Config (env):
 #   PRR_FANOUT               must be "wezterm" (the router sets this); test-mode bypasses it
 #   PRR_FANOUT_TIMEOUT_MINS  global wall-clock cap; default 240 (4h); 0 = no cap
-#   PRR_FANOUT_GEOMETRY      initial window size COLSxROWS; default 160x50
+#   PRR_FANOUT_GEOMETRY      initial window size COLSxROWS; default 160x50, or 120x40 for one PR
+#   PRR_FANOUT_GEOMETRY_SINGLE  the one-PR size, overriding the above
 #
 # Author: Steve Woodruff (@sjwoodr)
 # SPDX-License-Identifier: MIT
@@ -81,7 +82,7 @@ for n in "${numbers[@]}"; do rm -f "/tmp/prr-fanout-${n}.result"; done
 N=${#refs[@]}
 
 # --- start an isolated wezterm gui instance, addressed by its own socket ------
-geo="${PRR_FANOUT_GEOMETRY:-160x50}"
+geo="$(fanout_geometry "$N")"
 gcols="${geo%%x*}"; grows="${geo##*x}"
 sockdir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/wezterm"
 cls="prr-fanout-$$"

@@ -55,7 +55,8 @@
 # Config (env):
 #   PRR_FANOUT               must be "terminator" (the router sets this); test-mode bypasses it
 #   PRR_FANOUT_TIMEOUT_MINS  global wall-clock cap; default 240 (4h); 0 = no cap
-#   PRR_FANOUT_GEOMETRY      window size COLSxROWS in chars; default 160x50
+#   PRR_FANOUT_GEOMETRY      window size COLSxROWS in chars; default 160x50, or 120x40 for one PR
+#   PRR_FANOUT_GEOMETRY_SINGLE  the one-PR size, overriding the above
 #                            (converted to pixels at ~9x19 per cell for the layout)
 #   PRR_FANOUT_TERM_AUTOCLOSE  integer seconds a pane stays up after its review
 #                              finishes before self-closing (ends that pane's
@@ -117,7 +118,7 @@ N=${#refs[@]}
 # Other backends size in char cells; Terminator layout nodes size in pixels, so
 # convert with a nominal cell (~9w x 19h). Exact size does not matter: the panes
 # are mouse-resizable and the ratios keep them even on window resize.
-geo="${PRR_FANOUT_GEOMETRY:-160x50}"
+geo="$(fanout_geometry "$N")"
 gchars_c="${geo%%x*}"; gchars_r="${geo##*x}"
 Wpx=$(( gchars_c * 9 )); Hpx=$(( gchars_r * 19 ))
 

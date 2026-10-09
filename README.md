@@ -357,7 +357,8 @@ Tune (or opt out) via environment:
   denied or iTerm2's AppleScript support is off, prr falls back to `open`
   automatically.
 - `PRR_FANOUT_GEOMETRY` — size of the spawned window as `COLSxROWS`; default
-  `160x50`. On Linux it is applied via the terminal's geometry flag
+  `160x50`, or `120x40` when there is only one PR (`/prr bg <PR>`).
+  `PRR_FANOUT_GEOMETRY_SINGLE` sets the one-PR size on its own. On Linux it is applied via the terminal's geometry flag
   (`tilix`/`terminator`/`gnome-terminal` `--geometry=`, `xterm` `-geometry`); on macOS
   iTerm2 has `columns`/`rows` set directly on the new window, and every other app
   self-resizes with a terminal escape that Terminal.app honors.

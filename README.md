@@ -577,7 +577,9 @@ It is fully opt-in and a no-op unless both of these are set in the environment:
   [Creating the Slack app](#creating-the-slack-app) below for the step-by-step.
 - `PRR_CODE_REVIEWS_CHANNEL` — the channel ID to search (e.g. `C0XXXXXXX`)
 
-With neither set, behavior is unchanged. The step is best-effort: if the post is
+With either one unset, prr posts nothing to Slack, but when a review is posted
+it prints the would-be thread reply at the end of the run (and names it in the
+fan-out rollup) so you can post it by hand. The step is best-effort: if the post is
 not found or the chat API errors, it logs a note and never fails the review that
 was already posted.
 

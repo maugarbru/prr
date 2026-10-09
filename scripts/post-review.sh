@@ -402,6 +402,15 @@ else
     --repo "$repo" --number "$number" \
     --unreact eyes --react "$react_emoji" \
     ${slack_summary:+--reply "$slack_summary"} || true
+  # Without the Slack env vars the reply above was a silent no-op, so hand the
+  # message to the user to post by hand. The file is for the fan-out rollup: a
+  # pane closes as soon as this script ends. The prr- prefix keeps it out of
+  # cleanup's /tmp/pr-<n>-* glob, like the findings file.
+  if [[ -n "$slack_summary" && ( -z "${SLACK_BOT_TOKEN:-}" || -z "${PRR_CODE_REVIEWS_CHANNEL:-}" ) ]]; then
+    printf '%s\n' "$slack_summary" > "/tmp/prr-slack-${number}.txt"
+    echo "slack: not configured, post this in the PR's chat thread yourself:"
+    echo "  $slack_summary"
+  fi
 fi
 
 cleanup

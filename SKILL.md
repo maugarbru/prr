@@ -227,7 +227,10 @@ three checks:
   gate fully intact. It closes each pane as that PR's review finishes (it watches
   the result file `post-review.sh` writes), then prints a consolidated rollup. Do
   **not** run steps 1-6 for the batch yourself. When the background launcher
-  exits, relay its rollup to the user.
+  exits, relay its rollup to the user. A pane closes as soon as its review
+  ends, so for any PR whose rollup line has a `findings:` path (a self-review's
+  report), read that file and give the user its verdict and ranked findings
+  here, with the path, since the pane that showed them is gone.
 
 - **Otherwise** (opted out with `PRR_FANOUT=off`, no GUI, or no backend
   resolvable — e.g. unset with no `tmux` on `PATH`) — fall back to reviewing the

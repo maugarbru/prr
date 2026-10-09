@@ -52,16 +52,24 @@ remaining() {
   echo "${out[*]}"
 }
 
+# Marks when this fan-out started, so the rollup only names findings files that
+# this run wrote (a self-review's report outlives its pane in
+# /tmp/prr-findings-<n>.md; an older one from another run must not be named).
+fanout_stamp="$(mktemp "${TMPDIR:-/tmp}/prr-fanout-stamp.XXXXXX")"
+
 # Print the consolidated rollup of every PR's outcome. Reads numbers + done_map.
 print_rollup() {
   echo
   echo "===== prr-fanout rollup ====="
-  local n
+  local n f
   for n in "${numbers[@]}"; do
     if [[ -n "${done_map[$n]:-}" ]]; then
       echo "  #$n  ${done_map[$n]}"
     else
       echo "  #$n  (no result — still open or aborted)"
     fi
+    f="/tmp/prr-findings-$n.md"
+    if [[ -f "$f" && "$f" -nt "$fanout_stamp" ]]; then echo "        findings: $f"; fi
   done
+  rm -f "$fanout_stamp"
 }

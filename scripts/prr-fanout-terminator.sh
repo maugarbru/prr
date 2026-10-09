@@ -80,8 +80,8 @@ if [[ "${1:-}" == "test-mode" ]]; then TEST=1; shift; fi
 # us with PRR_FANOUT=terminator; a direct caller must set it themselves.
 [[ "$TEST" -eq 1 || "${PRR_FANOUT:-}" == "terminator" ]] \
   || { echo "$TAG: not selected (PRR_FANOUT != terminator); refusing." >&2; exit 3; }
-[[ $# -ge 2 ]] \
-  || { echo "$TAG: need 2+ PRs to fan out (got $#)." >&2; exit 3; }
+[[ $# -ge 1 ]] \
+  || { echo "$TAG: need at least one PR to fan out." >&2; exit 3; }
 # Linux/X11 only: Terminator is a GTK app that needs a display, and this backend
 # tracks the GUI process by PID (no setsid/daemonization).
 [[ "$(uname)" != "Darwin" ]] \

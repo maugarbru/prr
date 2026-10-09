@@ -58,8 +58,8 @@ if [[ "${1:-}" == "test-mode" ]]; then TEST=1; shift; fi
 # with PRR_FANOUT=wezterm; a direct caller must set it themselves.
 [[ "$TEST" -eq 1 || "${PRR_FANOUT:-}" == "wezterm" ]] \
   || { echo "$TAG: not selected (PRR_FANOUT != wezterm); refusing." >&2; exit 3; }
-[[ $# -ge 2 ]] \
-  || { echo "$TAG: need 2+ PRs to fan out (got $#)." >&2; exit 3; }
+[[ $# -ge 1 ]] \
+  || { echo "$TAG: need at least one PR to fan out." >&2; exit 3; }
 # Linux-only: this backend uses `setsid` (no macOS equivalent) and the XDG runtime
 # gui sockets. On macOS use the tmux backend, which drives wezterm fine.
 [[ "$(uname)" != "Darwin" ]] \

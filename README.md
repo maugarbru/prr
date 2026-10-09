@@ -286,11 +286,26 @@ hands off to the matching `scripts/prr-fanout-<backend>.sh`.
 The wait between approvals is a plain shell sleep loop, so an idle batch (you
 walked away) costs **no tokens** — only the active reviews do.
 
+**One PR in the background.** A long review would otherwise block the session
+you started it from. Add `bg` (or `background`, `fan-out`, `fanout`) and even a
+single PR goes to its own pane, while your session waits in the background and
+stays free for other work:
+
+```
+/prr bg 1818
+/prr silent bg 1818
+```
+
+The pane is an ordinary single-PR review with the approval gate; the rollup
+arrives in your session when it finishes. The keyword composes with `silent` in
+any order, and with several PRs it changes nothing.
+
 **This assumes a graphical desktop session** (Linux X11/Xwayland or Wayland, or
 macOS), because the panes have to be visible for you to approve them. Over SSH
 or headless, or when the selected backend's tools are missing, the fan-out
 refuses and the PRs are reviewed **one at a time** instead (the normal single-PR
-flow per PR). A single-PR run ignores `PRR_FANOUT` entirely.
+flow per PR). A single-PR run without `bg` ignores `PRR_FANOUT` entirely; with
+`bg` it follows the same checks and, when they fail, reviews in your session.
 
 **The fan-out also needs bash >= 4** (the backends use associative arrays);
 single-PR reviews do not. This bites on **macOS**, which still ships bash 3.2 as

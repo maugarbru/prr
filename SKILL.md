@@ -10,7 +10,8 @@ description: >-
   self-review: the same full fresh pass, but report-only with nothing posted
   back to the PR. `/prr silent <PR>` reviews stealthily: the approval gate and
   GitHub posting work as usual, but the team's chat channel gets no signal at
-  all. Use when the user runs /prr, asks to review a pull request, or provides
+  all. `/prr bg <PR>` runs even one review in its own fan-out pane so this
+  session is not blocked. Use when the user runs /prr, asks to review a pull request, or provides
   a PR URL or number to review.
 ---
 
@@ -161,7 +162,7 @@ Throughout this workflow:
   re-review extras), which is what the review consumes. The general "tee
   output to /tmp" habit does not apply to these two scripts.
 
-## 0. Multi-PR fan-out (optional)
+## 0. Fan-out: several PRs, or one in the background (optional)
 
 **Test mode.** If the first argument is `test-mode` (e.g. `/prr test-mode 1 2 3
 4 5 6`), this is a no-Claude smoke test of the fan-out plumbing. Launch it **in
@@ -175,8 +176,16 @@ invoking Claude:
 ~/.claude/skills/prr/scripts/prr-fanout.sh test-mode <N> <N> [<N> ...]
 ```
 
+**Background keyword.** `bg`, `background`, `fan-out` or `fanout` anywhere in
+the arguments (e.g. `/prr bg 1818`, `/prr silent fanout 1818`) asks for the
+fan-out even for a **single PR**: the review runs in its own pane and session,
+and this one only waits in the background, so the user can keep working here.
+Strip the keyword before going further; it is never passed to the router or to
+the pane. It composes with `silent` in any order. With two or more PRs it
+changes nothing (they fan out anyway).
+
 If the skill argument names **more than one PR** (space-separated URLs or
-numbers, e.g. `/prr 101 102 103`):
+numbers, e.g. `/prr 101 102 103`), **or one PR with the background keyword**:
 
 Fan-out is **on by default** — the user does not have to opt in. Decide with
 three checks:
@@ -194,7 +203,7 @@ three checks:
   wait:
 
   ```
-  ~/.claude/skills/prr/scripts/prr-fanout.sh <PR> <PR> [<PR> ...]
+  ~/.claude/skills/prr/scripts/prr-fanout.sh <PR> [<PR> ...]
   ```
 
   Invoke it **bare** (no `PRR_FANOUT=...` prefix, no pipe) — any value is already
@@ -205,7 +214,7 @@ three checks:
   flow passes `--silent` to `setup-review.sh`:
 
   ```
-  ~/.claude/skills/prr/scripts/prr-fanout.sh silent <PR> <PR> [<PR> ...]
+  ~/.claude/skills/prr/scripts/prr-fanout.sh silent <PR> [<PR> ...]
   ```
 
   The router strips the flag and re-adds it to each pane's own `/prr` call, so
@@ -223,9 +232,12 @@ three checks:
 - **Otherwise** (opted out with `PRR_FANOUT=off`, no GUI, or no backend
   resolvable — e.g. unset with no `tmux` on `PATH`) — fall back to reviewing the
   PRs **one at a time**: run the normal single-PR flow (steps 1-6) for the first
-  PR, then the next, and so on. Never block on a missing GUI/backend.
+  PR, then the next, and so on. Never block on a missing GUI/backend. A single
+  PR with the background keyword is reviewed here as usual; say in one line that
+  the background run was not available and why.
 
-If the argument names a single PR, ignore this section and start at step 1.
+If the argument names a single PR without the background keyword, ignore this
+section and start at step 1.
 
 ## 1. Set up the review
 

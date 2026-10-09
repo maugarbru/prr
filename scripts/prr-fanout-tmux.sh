@@ -53,8 +53,8 @@ if [[ "${1:-}" == "test-mode" ]]; then TEST=1; shift; fi
 # it themselves.
 [[ "$TEST" -eq 1 || "${PRR_FANOUT:-}" == "tmux" ]] \
   || { echo "$TAG: not selected (PRR_FANOUT != tmux); refusing." >&2; exit 3; }
-[[ $# -ge 2 ]] \
-  || { echo "$TAG: need 2+ PRs to fan out (got $#)." >&2; exit 3; }
+[[ $# -ge 1 ]] \
+  || { echo "$TAG: need at least one PR to fan out." >&2; exit 3; }
 
 os="$(uname)"
 # macOS (Aqua) has no DISPLAY; a desktop GUI is assumed present. On Linux require

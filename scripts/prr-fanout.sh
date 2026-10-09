@@ -26,8 +26,8 @@
 #    by the backends; see their headers.)
 #
 # Usage (run in the BACKGROUND from the skill; blocks until every review ends):
-#   prr-fanout.sh <PR-url-or-number> <PR-url-or-number> ...
-#   prr-fanout.sh silent <PR> <PR> ...      stealth: each pane runs `/prr silent`
+#   prr-fanout.sh <PR-url-or-number> [<PR-url-or-number> ...]   (one PR: /prr bg)
+#   prr-fanout.sh silent <PR> [<PR> ...]    stealth: each pane runs `/prr silent`
 #   prr-fanout.sh test-mode <N> <N> ...     no-Claude plumbing smoke test
 #
 # Author: Steve Woodruff (@sjwoodr)

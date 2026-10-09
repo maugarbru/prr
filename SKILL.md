@@ -293,18 +293,23 @@ Then:
   - **Jira ticket:** use the Atlassian MCP `getJiraIssue` tool if
     available. **Actually call it.** MCP tools are often deferred: listed
     by name only until loaded, so load it first (in Claude Code,
-    `ToolSearch` with the query `getJiraIssue`). Search by that bare name,
-    not an exact `select:`: the prefix depends on how the server was
+    `ToolSearch` with the query `+atlassian getJiraIssue`). Search rather
+    than `select:` one exact name: the prefix depends on how the server was
     connected - `mcp__atlassian__getJiraIssue` for the standalone Atlassian
     MCP, `mcp__claude_ai_Atlassian_Rovo__getJiraIssue` for the Atlassian
     Rovo connector on claude.ai - and a `select:` with the wrong prefix
-    finds nothing. Either way the tool requires `cloudId`: the ticket's site URL
+    finds nothing. Keep the `+atlassian`: it requires the vendor in the
+    tool name, so a `getJiraIssue` on some other connected server is never
+    sent the ticket key and site URL. Either way the tool requires `cloudId`: the ticket's site URL
     (`https://<site>.atlassian.net`) is accepted as-is; for a bare
     `KEY-NNNN`, take it from the same server's
     `getAccessibleAtlassianResources`. Its default fields
     leave out custom fields, which is where many projects keep acceptance
     criteria, so pass `fields: ["*all"]` with `expand: "names"` to read
-    them by name. A tool you
+    them by name. The ticket is read only to check acceptance criteria:
+    never quote its other fields (internal notes, customer details) in the
+    review body, inline comments or `slack_summary`, since prr can post on
+    a public repo. A tool you
     have not tried to load is not missing. Not hypothetical: an unattended
     run in a session where Jira worked earlier that day recorded "unread"
     for two reviews without ever making the call. Only if no Atlassian MCP
@@ -906,7 +911,7 @@ cleanup verified: worktree gone, no /tmp/pr-<N>-* artifacts left
 
 or, if something survived, `cleanup INCOMPLETE, still present: <paths>`. That
 line IS the confirmation; quote it and move on. If the output above it has a
-`slack: not configured` line, end your reply with the message under it,
+`slack: reply not posted` line, end your reply with the message under it,
 verbatim, so the user can post it in the PR's chat thread themselves. Do not follow up with an
 `ls /tmp/pr-<N>-*` or `git worktree list | grep <N>` of your own. Such a
 command embeds the PR number in a pipeline, so it can never match the
@@ -965,10 +970,12 @@ opt-in and a no-op unless both environment variables are set:
   need for workspace-admin approval of the app install.
 - `PRR_CODE_REVIEWS_CHANNEL` — the channel ID to search (e.g. `C0XXXXXXX`).
 
-With either one unset, nothing reaches Slack, but a review that posts still
-prints its `slack_summary` under a `slack: not configured` line (and writes it
-to `/tmp/prr-slack-<N>.txt` for the fan-out rollup), and you hand it to the user
-at the end of the run (step 6). Silent reviews print nothing. Reactions post as you;
+With either one unset, nothing reaches Slack. Whenever the thread reply is not
+posted (Slack not configured, the PR's post not found, or a Slack error), a
+review that posts still prints its `slack_summary` under a
+`slack: reply not posted` line (in a fan-out pane it also writes
+`/tmp/prr-slack-<N>.txt` for the rollup), and you hand it to the user at the end
+of the run (step 6). Silent reviews print nothing. Reactions post as you;
 multiple reactions are fine (one per reviewer), and re-reacting (or re-removing)
 the same post is a harmless no-op. Every step is best-effort: if the post is not
 found or Slack errors, it logs a note and does not fail the run (the review is
